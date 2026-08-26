@@ -1,0 +1,123 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v0.1.0)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: macos-15
+            target: aarch64-apple-darwin
+            archive: tar
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            archive: tar
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            archive: tar
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            archive: tar
+          - os: windows-2025
+            target: x86_64-pc-windows-msvc
+            archive: zip
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify release source
+        shell: bash
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: ./scripts/release-assets.sh "$TAG"
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}
+
+      # `--features api` is not optional here: the affiles target declares
+      # `required-features = ["api"]`, so the library keeps its bare PTY
+      # dependency tree while the CLI keeps its HTTP server, and this build has
+      # to ask for the feature to get a binary at all.
+      #
+      # Naming `--bin affiles` is what makes that a hard failure rather than
+      # a quiet one. Without the feature, `cargo build --release` alone would
+      # succeed while producing no executable, and the packaging step below
+      # would be the first thing to notice; asking for the target by name makes
+      # Cargo refuse up front and say which feature is missing.
+      - name: Build
+        run: cargo build --release --features api --bin affiles --target ${{ matrix.target }}
+
+      - name: Package
+        shell: bash
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          TARGET: ${{ matrix.target }}
+          ARCHIVE_KIND: ${{ matrix.archive }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?(\+[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
+            echo "invalid release tag: $TAG" >&2
+            exit 1
+          fi
+          BIN_DIR="target/${TARGET}/release"
+          if [ "$ARCHIVE_KIND" = "zip" ]; then
+            ARCHIVE="affiles-${TAG}-${TARGET}.zip"
+            cd "$BIN_DIR" && 7z a "../../../$ARCHIVE" affiles.exe && cd -
+          else
+            ARCHIVE="affiles-${TAG}-${TARGET}.tar.gz"
+            tar -czf "$ARCHIVE" -C "$BIN_DIR" affiles
+          fi
+          # A cached `target/` can hold a binary from an earlier run, so assert
+          # the archived one is this tag's rather than merely that it runs.
+          "$BIN_DIR/affiles" --version | grep -q "\"version\":\"${TAG#v}\""
+          # The API is what the feature gate exists for, so prove it is present
+          # in the artifact instead of trusting the build line above.
+          "$BIN_DIR/affiles" api --help >/dev/null
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          # Take the digest and write the line, rather than letting each
+          # platform's tool spell it. Git Bash's sha256sum treats an archive as
+          # binary and writes `<digest> *<name>`, where GNU coreutils on Linux
+          # and shasum on macOS write `<digest>  <name>`. This file is published
+          # for people and read by the package channels, so one spelling on
+          # every platform is the point — and it is the spelling
+          # release-assets.sh verifies the upload against.
+          if command -v sha256sum >/dev/null 2>&1; then
+            DIGEST="$(sha256sum "$ARCHIVE" | awk '{print $1}')"
+          else
+            DIGEST="$(shasum -a 256 "$ARCHIVE" | awk '{print $1}')"
+          fi
+          printf '%s  %s\n' "$DIGEST" "$ARCHIVE" > "${ARCHIVE}.sha256"
+          echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
+
+      - name: Upload immutable release assets
+        shell: bash
+        run: ./scripts/release-assets.sh "$TAG" "$ARCHIVE" "${ARCHIVE}.sha256"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

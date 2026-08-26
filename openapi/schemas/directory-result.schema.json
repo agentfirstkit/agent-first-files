@@ -1,0 +1,80 @@
+{
+  "$id": "https://agentfirstkit.com/schemas/affiles/v1/directory-result.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "entries": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "enum": [
+              "file",
+              "directory",
+              "symlink",
+              "other"
+            ],
+            "type": "string"
+          },
+          "modified_rfc3339": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "path": {
+            "description": "Root-relative, and the key for every later call about this entry",
+            "type": "string"
+          },
+          "readable": {
+            "type": "boolean"
+          },
+          "size_bytes": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "symlink_target": {
+            "description": "Where a link points, as written. Advisory: shown, never resolved on the caller's behalf.",
+            "type": "string"
+          },
+          "unsupported": {
+            "description": "Why an entry that exists cannot be used the ordinary way. Present rather than implied, because `there is something here you cannot open` and `there is nothing here` are different facts.",
+            "enum": [
+              "non_utf8_name",
+              "outside_root",
+              "unsupported_kind"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "name",
+          "kind",
+          "size_bytes",
+          "readable"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "entry_count": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "next_cursor": {
+      "description": "Absent once the directory is exhausted",
+      "type": "string"
+    },
+    "path": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "path",
+    "entries",
+    "entry_count"
+  ],
+  "title": "DirectoryResult",
+  "type": "object"
+}

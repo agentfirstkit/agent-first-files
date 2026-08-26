@@ -1,0 +1,18 @@
+# Canonical Clippy config for every Rust spore in this repository.
+#
+# Default policy mirrored into each Rust project's clippy.toml. Repository
+# tooling may select a project-specific full replacement.
+
+# Production code uses the matching `deny` lint levels in each Cargo.toml.
+# Tests may use these failure helpers when they make assertions clearer.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+
+disallowed-macros = [
+  { path = "std::eprintln", reason = "Runtime diagnostics must use the AFDATA emitter so kind-based routing, formatting, and redaction remain consistent." },
+]
+
+disallowed-methods = [
+  { path = "std::io::stderr", reason = "Runtime diagnostics must use a sanctioned AFDATA sink so kind-based routing, formatting, and redaction remain consistent." },
+]

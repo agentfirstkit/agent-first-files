@@ -1,0 +1,58 @@
+{#-
+  The browsing page.
+
+  Every id comes from `document.elements` rather than being typed out, so a
+  replacement page cannot misspell one, and every id it drops is reported before
+  a window opens. The script tag is not here: affiles splices its own runtime in
+  at the marker below, and a frontend may not supply one.
+-#}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>{{ document.title }}</title>
+  <link rel="icon" href="{{ afui.app_icon_path }}" type="image/svg+xml">
+  <link rel="stylesheet" href="{{ afui.base_style_path }}">
+  <link rel="stylesheet" href="style.css">
+  <!-- affiles:trusted-runtime -->
+</head>
+<body data-ui-kind="{{ document.ui_kind }}" data-ui-api-version="{{ document.ui_api_version }}">
+  <header class="bar">
+    <div class="who">
+      <strong class="brand">{{ document.brand }}</strong>
+      <span id="root-name" class="root-name"></span>
+    </div>
+    <p id="status" class="status" role="status" aria-live="polite">loading</p>
+  </header>
+
+  <main class="deck">
+    {#- One container. Every row under it is the runtime's, because a tree's
+        shape is whatever the person expanded, not something a page can lay
+        out ahead of time. -#}
+    <ul id="tree" class="tree" role="tree" aria-label="{{ document.heading }}"></ul>
+    <p id="empty-state" class="empty" hidden>Nothing here.</p>
+  </main>
+
+  <section id="viewer" class="viewer" aria-label="File" hidden>
+    <header class="viewer-head">
+      {#- The control leads the header because on a phone the file is a screen
+          the person navigated to, and the back control of one lives at its
+          head. A wide screen shows the file beside the tree instead, where
+          nothing was left to come back from — so the same button says Close
+          there. One button, one behaviour, the word the shape earns. -#}
+      <button type="button" id="viewer-close">
+        <span class="glyph" aria-hidden="true">‹</span>
+        <span class="back-word">Back</span>
+        <span class="close-word">Close</span>
+      </button>
+      <div class="who">
+        <strong id="viewer-title" class="viewer-title"></strong>
+        <span id="viewer-meta" class="viewer-meta"></span>
+      </div>
+    </header>
+    <div id="viewer-body" class="viewer-body"></div>
+    <p class="note">{{ document.source_only_note }}</p>
+  </section>
+</body>
+</html>

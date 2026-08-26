@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          components: rustfmt, clippy
+
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+
+      # The runner images ship whatever ShellCheck their distribution packages
+      # — Ubuntu 24.04's is 0.9.0, two majors behind — and its rules differ from
+      # the pinned one's on real code. Provision the pin so this leg judges the
+      # tree by the same rules the local gate does.
+      - name: Setup ShellCheck
+        if: runner.os != 'Windows'
+        shell: bash
+        run: ./scripts/install-shellcheck.sh --install
+
+      # scripts/test.sh is written against the afdata Bash kit and also lints
+      # the committed OpenAPI contract and validates the CLI discovery streams
+      # with afdata, so afdata has to exist before the gate runs.
+      - name: Install afdata
+        run: cargo install agent-first-data --locked --features skill
+
+      - name: Validate Agent Skill
+        run: afdata skill validate skills/agent-first-files
+
+      # Run the release gate itself rather than a hand-written command list:
+      # Step 0 of a release is `projects.sh test agent-first-files all`, which
+      # execs this same script, so anything that can fail a release fails here
+      # first. `all` covers fmt, both clippy profiles, the core-tier dependency
+      # check, OpenAPI contract drift, the unit suites, and the smoke — which
+      # drives the real binary over HTTP to prove the root confinement holds for
+      # a request from outside the process, not merely for a library call.
+      - name: Release gate
+        run: ./scripts/test.sh all

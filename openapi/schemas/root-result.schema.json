@@ -1,0 +1,38 @@
+{
+  "$id": "https://agentfirstkit.com/schemas/affiles/v1/root-result.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "exclude_count": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "max_read_bytes": {
+      "minimum": 1,
+      "type": "integer"
+    },
+    "name": {
+      "type": "string"
+    },
+    "root_path": {
+      "type": "string"
+    },
+    "symlinks": {
+      "description": "within_root follows a link whose target is inside the root and refuses one whose target is not; never follows nothing at all.",
+      "enum": [
+        "within_root",
+        "never"
+      ],
+      "type": "string"
+    }
+  },
+  "required": [
+    "root_path",
+    "name",
+    "exclude_count",
+    "symlinks",
+    "max_read_bytes"
+  ],
+  "title": "RootResult",
+  "type": "object"
+}

@@ -1,0 +1,38 @@
+{
+  "$id": "https://agentfirstkit.com/schemas/affiles/v1/text-file-result.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "byte_length": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "byte_offset": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "path": {
+      "type": "string"
+    },
+    "text": {
+      "type": "string"
+    },
+    "total_bytes": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "truncated": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "path",
+    "text",
+    "byte_offset",
+    "byte_length",
+    "total_bytes",
+    "truncated"
+  ],
+  "title": "TextFileResult",
+  "type": "object"
+}

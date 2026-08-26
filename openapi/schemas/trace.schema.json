@@ -1,0 +1,13 @@
+{
+  "$id": "https://agentfirstkit.com/schemas/affiles/v1/trace.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "duration_ms": {
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "title": "Trace",
+  "type": "object"
+}

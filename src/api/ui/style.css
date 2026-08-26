@@ -1,0 +1,409 @@
+/* Two shapes, one page.
+ *
+ * This page exists because somebody is not at the machine, which on the
+ * evidence often means a phone. So the listing is a stack of rows with
+ * thumb-sized targets, nothing here is a table, and a file is a screen of its
+ * own with a back control at its head — a sheet floating over the tree is a
+ * worse way to read a file on six inches than the screen it is covering.
+ *
+ * A large screen is not a big phone. Past 64rem the same page becomes a shell:
+ * the bar across the top, the tree scrolling on the left, the file scrolling
+ * beside it. Nothing is covered, nothing has to be closed to see where you
+ * were, and the width goes to the two things being read instead of to margins
+ * either side of one narrow column. */
+
+:root {
+  /* The one surface this page needs and the baseline has no opinion about:
+     the face of a row's button. */
+  --button: #ffffff;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --button: #1d2330;
+  }
+}
+
+/* This page places its own insets: the bar is sticky and the deck runs
+   edge-to-edge, so the notch is cleared inside them rather than by moving the
+   whole page down and letting rows scroll past above the bar. */
+body {
+  padding: 0;
+}
+
+.bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 10px 14px;
+  padding-top: max(10px, env(safe-area-inset-top));
+  border-bottom: 1px solid var(--afui-line);
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--afui-page);
+}
+
+.who {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.brand {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.root-name,
+.status {
+  margin: 0;
+  color: var(--afui-muted);
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.deck {
+  padding: 8px 0;
+  padding-bottom: max(8px, env(safe-area-inset-bottom));
+}
+
+/* A tree of nested lists, indented by the runtime rather than by nesting
+ * depth in CSS: on a phone every level of margin is width taken from the
+ * names, which are the thing being read. */
+.tree,
+.children {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  /* A thumb, not a mouse. */
+  min-height: 44px;
+  padding: 6px 12px 6px 8px;
+  cursor: pointer;
+}
+
+button.row:hover {
+  background: var(--afui-panel-strong);
+}
+
+/* The baseline draws the focus ring outside the control. A row runs the full
+   width of the page, so outside it is off the edge — this one goes inward. */
+.row:focus-visible {
+  outline-offset: -3px;
+}
+
+.twisty {
+  flex: none;
+  width: 1em;
+  color: var(--afui-muted);
+  font-size: 11px;
+}
+
+.node[data-unsupported] .row {
+  cursor: default;
+  color: var(--afui-muted);
+}
+
+.node[data-kind="directory"] > .row .row-name {
+  color: var(--afui-accent);
+}
+
+.row-name {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.row-meta {
+  flex: none;
+  color: var(--afui-muted);
+  font-size: 12px;
+}
+
+/* An empty directory, or one that refused. Both are facts about the node, so
+ * both appear inside it rather than as a page-level message. */
+.failed {
+  padding: 6px 12px 6px 26px;
+  color: var(--afui-muted);
+  font-size: 12px;
+}
+
+.empty,
+.note {
+  margin: 12px 14px 0;
+  color: var(--afui-muted);
+  font-size: 13px;
+}
+
+.more > .row {
+  color: var(--afui-accent);
+  min-height: 36px;
+}
+
+/* Leaving the file, in the words of the shape it is in. Both are in the markup
+ * and one is displayed, because which one is true is a question about the
+ * width — not something a script should have to watch and rewrite. */
+#viewer-close {
+  order: -1;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--afui-line);
+  border-radius: 7px;
+  background: var(--button);
+  color: var(--afui-ink);
+  font: inherit;
+  font-size: 13px;
+  min-height: 36px;
+  padding: 4px 12px 4px 9px;
+  cursor: pointer;
+}
+
+#viewer-close .glyph {
+  font-size: 17px;
+  line-height: 1;
+  color: var(--afui-muted);
+}
+
+#viewer-close .close-word {
+  display: none;
+}
+
+/* Inside a frame that draws a head, this page does not draw a second one. Its
+ * three parts are the frame's already — the program, the root it is on, and the
+ * line this page keeps sending up — so what is left here would be a row of the
+ * screen repeating the row above it. */
+body[data-frame-head="true"] .bar {
+  display: none;
+}
+
+/* A frame around this page that draws its own way back has put one where the
+ * person's window keeps it, and over the tree this page's control is the same
+ * gesture a second time. Beside the tree it is not — there it closes a pane,
+ * and nothing was navigated away from — so the wide shape below puts it back. */
+body[data-frame-navigation="true"] #viewer-close {
+  display: none;
+}
+
+.viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 4;
+  overflow: auto;
+  background: var(--afui-page);
+  /* No top padding: the head below is sticky and carries the inset itself, so
+     the file scrolls under it rather than through a gap above it. */
+  padding: 0 12px;
+  padding-bottom: max(12px, env(safe-area-inset-bottom));
+}
+
+body[data-viewing="true"] {
+  overflow: hidden;
+}
+
+.viewer-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0;
+  padding-top: max(10px, env(safe-area-inset-top));
+  border-bottom: 1px solid var(--afui-line);
+  background: var(--afui-page);
+}
+
+.viewer-head .who {
+  flex: 1;
+  align-items: baseline;
+}
+
+.viewer-title {
+  font-size: 14px;
+}
+
+.viewer-meta {
+  color: var(--afui-muted);
+  font-size: 12px;
+}
+
+.source {
+  margin: 10px 0 0;
+  padding: 10px;
+  border: 1px solid var(--afui-line);
+  border-radius: 8px;
+  background: var(--afui-panel-strong);
+  font-family: var(--afui-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  /* Long lines wrap rather than putting the whole page on a horizontal
+   * scroller, which on a phone makes everything else unreadable. */
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.viewer-state {
+  display: grid;
+  place-items: center;
+  min-height: 12rem;
+  margin: 10px 0 0;
+  padding: 1rem;
+  border: 1px dashed var(--afui-line);
+  border-radius: 8px;
+  color: var(--afui-muted);
+  text-align: center;
+}
+
+.viewer-state[data-state="loading"]::before {
+  content: "";
+  width: 1rem;
+  height: 1rem;
+  margin-bottom: 0.65rem;
+  border: 2px solid var(--afui-line);
+  border-top-color: var(--afui-accent);
+  border-radius: 50%;
+  animation: viewer-spin 0.8s linear infinite;
+}
+
+.viewer-state[data-state="error"] {
+  border-style: solid;
+}
+
+@keyframes viewer-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .viewer-state[data-state="loading"]::before { animation: none; }
+}
+
+.preview {
+  display: block;
+  max-width: 100%;
+  max-height: calc(100dvh - 8rem);
+  margin-inline: auto;
+  margin-top: 10px;
+  border: 1px solid var(--afui-line);
+  border-radius: 8px;
+}
+
+/* The shell. One row for the bar, one for whatever is being read.
+ *
+ * The page itself stops scrolling here and each column scrolls on its own,
+ * which is what lets the bar stay put without being sticky and lets a person
+ * scroll a long file without losing the row they opened it from. */
+@media (min-width: 64rem) {
+  body {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    height: 100dvh;
+    overflow: hidden;
+  }
+
+  /* Rows are placed rather than filled: inside a frame that draws a head this
+     page does not draw its own, and left to auto-placement the deck would move
+     up into the `auto` row the bar had — where a scrolling item computes to no
+     height at all, and the card goes blank from one `display: none`. */
+  .bar {
+    grid-column: 1 / -1;
+    grid-row: 1;
+    position: static;
+  }
+
+  .deck {
+    grid-row: 2;
+    min-width: 0;
+    overflow: auto;
+  }
+
+  .viewer {
+    grid-row: 2;
+  }
+
+  /* Browsing with nothing open: the rows are the only thing on screen, so they
+     are centred rather than pinned to one edge of a wide window — and held to
+     a list's width. A row is a name at one end and a date at the other; give it
+     the whole of a wide window and the two stop being one line. */
+  .tree,
+  .empty {
+    max-width: 46rem;
+    margin-inline: auto;
+  }
+
+  /* Open a file and the tree steps aside instead of disappearing. The column
+     is a share of the window with a floor and a ceiling: enough for names at
+     depth, never so much that the file is read through a slot. */
+  body[data-viewing="true"] {
+    grid-template-columns: clamp(19rem, 34%, 34rem) minmax(0, 1fr);
+  }
+
+  .viewer {
+    position: static;
+    z-index: auto;
+    min-width: 0;
+    border-left: 1px solid var(--afui-line);
+    padding: 0 14px;
+    padding-bottom: 14px;
+  }
+
+  .viewer-head {
+    align-items: baseline;
+    padding-top: 10px;
+  }
+
+  /* Nothing was navigated away from, so the control closes a pane and sits
+     where a pane's own control belongs — including inside a frame that draws
+     navigation of its own, which is a way out of a screen this shape never
+     entered. */
+  #viewer-close,
+  body[data-frame-navigation="true"] #viewer-close {
+    display: inline-flex;
+    order: 1;
+    padding-inline: 12px;
+  }
+
+  #viewer-close .glyph,
+  #viewer-close .back-word {
+    display: none;
+  }
+
+  #viewer-close .close-word {
+    display: inline;
+  }
+}
+
+/* A mouse is not a thumb: the same tree gives back the height it was holding
+ * for fingers, and more of the directory fits without scrolling. */
+@media (min-width: 64rem) and (pointer: fine) {
+  .row {
+    min-height: 34px;
+  }
+
+  .more > .row {
+    min-height: 30px;
+  }
+}

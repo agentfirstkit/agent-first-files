@@ -1,0 +1,82 @@
+[package]
+name = "agent-first-files"
+version = "0.1.0"
+edition = "2024"
+description = "agent-first-files puts one directory in front of a person who is not at the machine holding it — read-only, nothing above the root, and no writes at all. It lists directories, reads files as text or bytes, and refuses everything outside its root, behind a bearer-protected loopback HTTP server with a generated OpenAPI 3.2 contract. Its CLI can also open the same projection as a trusted local window."
+license = "MIT"
+repository = "https://github.com/agentfirstkit/agent-first-files"
+readme = "README.md"
+include = [
+    "src/**",
+    "skills/**",
+    "tests/**",
+    "docs/**",
+    "openapi/**",
+    "scripts/test.sh",
+    "Cargo.toml",
+    "README.md",
+    "LICENSE",
+    "clippy.toml",
+]
+
+[features]
+default = []
+# Filesystem change notification. Its own tier because a consumer that only
+# projects a directory should not acquire a platform watcher backend to do it,
+# and because the guard tier's whole promise is what it does not pull in.
+watch = ["dep:notify"]
+api = [
+    "dep:agent-first-data",
+    "watch",
+    "agent-first-data/skill-admin",
+    "agent-first-ui/session",
+    "agent-first-ui/page",
+    "dep:axum",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:tokio",
+]
+
+[[bin]]
+name = "affiles"
+path = "src/main.rs"
+required-features = ["api"]
+
+[dependencies]
+# File times are a domain value a person reads, so they are `_rfc3339` like
+# every other timestamp in this kit rather than an epoch integer the caller has
+# to format.
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+# Platform filesystem watching for the `watch` tier. Only ever registered on
+# directories a person has open, never recursively on the root.
+notify = { version = "8", optional = true }
+# yaml/toml/dotenv/ini are what `--access-token-secret file:PATH#DOT_PATH` reads
+# out of; without them the source is advertised and cannot be honored.
+agent-first-data = { version = "0.34.0", default-features = false, features = ["cli", "yaml", "toml", "dotenv", "ini"], optional = true }
+# `session`: the local window is a served AFUI session with a credential of its
+# own, and AFUI owns the browser process, the profile, and the security headers.
+# `page`: the frontend's template is assembled and checked by AFUI's `UiPage`
+# rather than affiles driving MiniJinja itself.
+agent-first-ui = { version = "0.5.0", default-features = false, optional = true }
+axum = { version = "0.8", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"], optional = true }
+
+[dev-dependencies]
+# The page's own transport, driven by the crate that owns it. A hand-rolled
+# WebSocket client here would be a second implementation of the envelope, and
+# the bug it has to catch — a reply the page refuses — is invisible to any
+# client that does not check what the page checks.
+agent-first-ui = { version = "0.5.0", default-features = false, features = ["test-support"] }
+serde_json = "1"
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tower = { version = "0.5", features = ["util"] }
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+print_stdout = "deny"
+print_stderr = "deny"

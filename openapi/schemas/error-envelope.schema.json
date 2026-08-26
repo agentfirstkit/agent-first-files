@@ -1,0 +1,64 @@
+{
+  "$id": "https://agentfirstkit.com/schemas/affiles/v1/error-envelope.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "error": {
+      "additionalProperties": true,
+      "properties": {
+        "code": {
+          "description": "Stable failure code. `entry_not_found` is also what an excluded path and a path outside the root answer with, deliberately: a refusal a caller can tell apart from an absence is an oracle for what exists.",
+          "enum": [
+            "entry_not_found",
+            "not_a_directory",
+            "is_a_directory",
+            "not_text",
+            "invalid_path",
+            "permission_denied",
+            "files_io_error",
+            "authentication_required",
+            "schema_not_found",
+            "api_route_not_found",
+            "api_method_not_allowed",
+            "api_result_serialization_failed",
+            "api_error_envelope_failed"
+          ],
+          "type": "string"
+        },
+        "hint": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "retryable": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "type": "object"
+    },
+    "kind": {
+      "const": "error"
+    },
+    "trace": {
+      "additionalProperties": true,
+      "properties": {
+        "duration_ms": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "required": [
+    "kind",
+    "error"
+  ],
+  "title": "ErrorEnvelope",
+  "type": "object"
+}

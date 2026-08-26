@@ -1,0 +1,918 @@
+{
+  "$self": "/openapi.json",
+  "components": {
+    "parameters": {
+      "EntryPath": {
+        "description": "Root-relative path. Empty or omitted is the root itself. Absolute paths and `..` are refused rather than resolved. A filesystem path is a query value here and never a URL path segment, so no name needs escaping to survive routing.",
+        "in": "query",
+        "name": "path",
+        "required": false,
+        "schema": {
+          "description": "Root-relative path with `/` separators. Empty is the root.",
+          "maxLength": 4096,
+          "type": "string"
+        }
+      },
+      "MaxBytes": {
+        "description": "How much to return, capped by the process-wide ceiling",
+        "in": "query",
+        "name": "max_bytes",
+        "required": false,
+        "schema": {
+          "default": 1048576,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "OffsetBytes": {
+        "description": "Where in the file to start",
+        "in": "query",
+        "name": "offset_bytes",
+        "required": false,
+        "schema": {
+          "default": 0,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "PageCursor": {
+        "description": "Resume after this cursor, which is only ever one this API returned",
+        "in": "query",
+        "name": "cursor",
+        "required": false,
+        "schema": {
+          "type": "string"
+        }
+      },
+      "PageLimit": {
+        "description": "Entries per page",
+        "in": "query",
+        "name": "limit",
+        "required": false,
+        "schema": {
+          "default": 500,
+          "maximum": 2000,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "SchemaFile": {
+        "description": "Standalone Schema filename from /schemas/index.json",
+        "in": "path",
+        "name": "schema_file",
+        "required": true,
+        "schema": {
+          "pattern": "^[a-z0-9-]+\\.schema\\.json$",
+          "type": "string"
+        }
+      }
+    },
+    "schemas": {
+      "DirectoryResult": {
+        "additionalProperties": false,
+        "properties": {
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/EntryResult"
+            },
+            "type": "array"
+          },
+          "entry_count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "next_cursor": {
+            "description": "Absent once the directory is exhausted",
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "entries",
+          "entry_count"
+        ],
+        "type": "object"
+      },
+      "EntryResult": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "enum": [
+              "file",
+              "directory",
+              "symlink",
+              "other"
+            ],
+            "type": "string"
+          },
+          "modified_rfc3339": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "path": {
+            "description": "Root-relative, and the key for every later call about this entry",
+            "type": "string"
+          },
+          "readable": {
+            "type": "boolean"
+          },
+          "size_bytes": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "symlink_target": {
+            "description": "Where a link points, as written. Advisory: shown, never resolved on the caller's behalf.",
+            "type": "string"
+          },
+          "unsupported": {
+            "description": "Why an entry that exists cannot be used the ordinary way. Present rather than implied, because `there is something here you cannot open` and `there is nothing here` are different facts.",
+            "enum": [
+              "non_utf8_name",
+              "outside_root",
+              "unsupported_kind"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "name",
+          "kind",
+          "size_bytes",
+          "readable"
+        ],
+        "type": "object"
+      },
+      "ErrorEnvelope": {
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "additionalProperties": true,
+            "properties": {
+              "code": {
+                "description": "Stable failure code. `entry_not_found` is also what an excluded path and a path outside the root answer with, deliberately: a refusal a caller can tell apart from an absence is an oracle for what exists.",
+                "enum": [
+                  "entry_not_found",
+                  "not_a_directory",
+                  "is_a_directory",
+                  "not_text",
+                  "invalid_path",
+                  "permission_denied",
+                  "files_io_error",
+                  "authentication_required",
+                  "schema_not_found",
+                  "api_route_not_found",
+                  "api_method_not_allowed",
+                  "api_result_serialization_failed",
+                  "api_error_envelope_failed"
+                ],
+                "type": "string"
+              },
+              "hint": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              },
+              "retryable": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "code",
+              "message"
+            ],
+            "type": "object"
+          },
+          "kind": {
+            "const": "error"
+          },
+          "trace": {
+            "$ref": "#/components/schemas/Trace"
+          }
+        },
+        "required": [
+          "kind",
+          "error"
+        ],
+        "type": "object"
+      },
+      "HealthResult": {
+        "additionalProperties": false,
+        "properties": {
+          "service": {
+            "const": "affiles"
+          },
+          "status": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "service",
+          "version",
+          "status"
+        ],
+        "type": "object"
+      },
+      "RootResult": {
+        "additionalProperties": false,
+        "properties": {
+          "exclude_count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "max_read_bytes": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "root_path": {
+            "type": "string"
+          },
+          "symlinks": {
+            "description": "within_root follows a link whose target is inside the root and refuses one whose target is not; never follows nothing at all.",
+            "enum": [
+              "within_root",
+              "never"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "root_path",
+          "name",
+          "exclude_count",
+          "symlinks",
+          "max_read_bytes"
+        ],
+        "type": "object"
+      },
+      "SchemaIndex": {
+        "additionalProperties": false,
+        "properties": {
+          "count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "json_schema_dialect": {
+            "type": "string"
+          },
+          "schema_name": {
+            "const": "affiles_schema_index"
+          },
+          "schema_version": {
+            "type": "integer"
+          },
+          "schemas": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "component_name": {
+                  "type": "string"
+                },
+                "schema_name": {
+                  "type": "string"
+                },
+                "schema_url": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "schema_name",
+                "schema_url",
+                "component_name"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "schema_name",
+          "schema_version",
+          "json_schema_dialect",
+          "count",
+          "schemas"
+        ],
+        "type": "object"
+      },
+      "TextFileResult": {
+        "additionalProperties": false,
+        "properties": {
+          "byte_length": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "byte_offset": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "path": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "total_bytes": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "path",
+          "text",
+          "byte_offset",
+          "byte_length",
+          "total_bytes",
+          "truncated"
+        ],
+        "type": "object"
+      },
+      "Trace": {
+        "additionalProperties": true,
+        "properties": {
+          "duration_ms": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "bearerAuth": {
+        "description": "Pass the API access token in Authorization. Query-string credentials are not accepted.",
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
+  },
+  "info": {
+    "description": "A bearer-protected, read-only projection of one directory tree. Every path is relative to the root this process was started with; nothing outside it is reachable, and a path that is excluded or outside answers exactly as one that does not exist.",
+    "title": "Agent-First Files API",
+    "version": "0.1.0"
+  },
+  "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
+  "openapi": "3.2.0",
+  "paths": {
+    "/health": {
+      "get": {
+        "description": "Public, and therefore carrying nothing about the projected root: the path this process is serving is a user value and lives behind the credential.",
+        "operationId": "getHealth",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "result"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/HealthResult"
+                    },
+                    "trace": {
+                      "$ref": "#/components/schemas/Trace"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "result"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Process health"
+          }
+        },
+        "security": [],
+        "summary": "Check API process health",
+        "tags": [
+          "discovery"
+        ]
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "operationId": "getOpenApiDocument",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The OpenAPI document this process serves"
+          }
+        },
+        "security": [],
+        "summary": "Read this OpenAPI document",
+        "tags": [
+          "discovery"
+        ]
+      }
+    },
+    "/schemas/index.json": {
+      "get": {
+        "operationId": "listJsonSchemas",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SchemaIndex"
+                }
+              }
+            },
+            "description": "Standalone Schema index"
+          }
+        },
+        "security": [],
+        "summary": "List the standalone JSON Schemas",
+        "tags": [
+          "discovery"
+        ]
+      }
+    },
+    "/schemas/{schema_file}": {
+      "get": {
+        "operationId": "getJsonSchema",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/SchemaFile"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/schema+json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "A self-contained JSON Schema"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "No such standalone Schema"
+          }
+        },
+        "security": [],
+        "summary": "Read one standalone JSON Schema",
+        "tags": [
+          "discovery"
+        ]
+      }
+    },
+    "/v1/directories": {
+      "get": {
+        "description": "Sorted by name in byte order, which is the order paging depends on. Directories are not hoisted above files: that is a presentation choice and belongs to whatever draws the list.",
+        "operationId": "listDirectory",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/EntryPath"
+          },
+          {
+            "$ref": "#/components/parameters/PageLimit"
+          },
+          {
+            "$ref": "#/components/parameters/PageCursor"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "result"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/DirectoryResult"
+                    },
+                    "trace": {
+                      "$ref": "#/components/schemas/Trace"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "result"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "One page of a directory"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "The path is not one this projection accepts"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Missing or invalid bearer credential"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "No such entry under this root"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "The path exists and is not a directory"
+          }
+        },
+        "summary": "List one directory",
+        "tags": [
+          "directories"
+        ]
+      }
+    },
+    "/v1/entries": {
+      "get": {
+        "operationId": "getEntry",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/EntryPath"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "result"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/EntryResult"
+                    },
+                    "trace": {
+                      "$ref": "#/components/schemas/Trace"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "result"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "One entry"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "The path is not one this projection accepts"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Missing or invalid bearer credential"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "No such entry under this root"
+          }
+        },
+        "summary": "Describe one entry",
+        "tags": [
+          "directories"
+        ]
+      }
+    },
+    "/v1/files/bytes": {
+      "get": {
+        "description": "The one response that is not an AFDATA envelope, because a byte stream cannot be one. The media type is taken conservatively from the extension and never sniffed from content; anything unrecognised is application/octet-stream, and every response carries `Content-Disposition: attachment` and `X-Content-Type-Options: nosniff` so nothing here decides that a workspace file is something a browser should run.",
+        "operationId": "readFileBytes",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/EntryPath"
+          },
+          {
+            "$ref": "#/components/parameters/OffsetBytes"
+          },
+          {
+            "$ref": "#/components/parameters/MaxBytes"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "A slice of the file, as itself",
+            "headers": {
+              "X-Total-Bytes": {
+                "description": "The whole file's size, so a caller knows what this slice left out",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "The path is not one this projection accepts"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Missing or invalid bearer credential"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "No such entry under this root"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "The path is a directory"
+          }
+        },
+        "summary": "Read a slice of a file as bytes",
+        "tags": [
+          "files"
+        ]
+      }
+    },
+    "/v1/files/text": {
+      "get": {
+        "description": "Refuses a file with a NUL or invalid encoding in the slice rather than returning replacement characters: a caller that asked for text and received mojibake has been told something false about the file. A slice that does not reach the end of the file is reported as truncated, which is not an error — reading the tail of a long log is the ordinary case.",
+        "operationId": "readTextFile",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/EntryPath"
+          },
+          {
+            "$ref": "#/components/parameters/OffsetBytes"
+          },
+          {
+            "$ref": "#/components/parameters/MaxBytes"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "result"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/TextFileResult"
+                    },
+                    "trace": {
+                      "$ref": "#/components/schemas/Trace"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "result"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "A slice of the file"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "The path is not one this projection accepts"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Missing or invalid bearer credential"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "No such entry under this root"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "The path is a directory, or the file is not text"
+          }
+        },
+        "summary": "Read a slice of a file as text",
+        "tags": [
+          "files"
+        ]
+      }
+    },
+    "/v1/root": {
+      "get": {
+        "description": "What this process is projecting and under what limits. The number of exclusion patterns is reported; the patterns themselves are not, because they describe what is being held back.",
+        "operationId": "getRoot",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "result"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/RootResult"
+                    },
+                    "trace": {
+                      "$ref": "#/components/schemas/Trace"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "result"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The projected root"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "The path is not one this projection accepts"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Missing or invalid bearer credential"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "No such entry under this root"
+          }
+        },
+        "summary": "Describe the projected root",
+        "tags": [
+          "root"
+        ]
+      }
+    }
+  },
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ],
+  "servers": [
+    {
+      "description": "The affiles process that served this document",
+      "url": "/"
+    }
+  ],
+  "tags": [
+    {
+      "name": "discovery"
+    },
+    {
+      "name": "root"
+    },
+    {
+      "name": "directories"
+    },
+    {
+      "name": "files"
+    }
+  ]
+}

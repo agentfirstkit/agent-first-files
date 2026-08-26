@@ -1,0 +1,23 @@
+{
+  "$id": "https://agentfirstkit.com/schemas/affiles/v1/health-result.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "service": {
+      "const": "affiles"
+    },
+    "status": {
+      "type": "string"
+    },
+    "version": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "service",
+    "version",
+    "status"
+  ],
+  "title": "HealthResult",
+  "type": "object"
+}

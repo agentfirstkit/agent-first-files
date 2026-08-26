@@ -1,0 +1,53 @@
+{
+  "$schema": "https://cmn.dev/schemas/v1/spore-core.json",
+  "id": "agent-first-files",
+  "name": "Agent-First Files",
+  "version": "0.1.0",
+  "domain": "agentfirstkit.com",
+  "key": "ed25519.BwbSzqdDYyMN1pPW5snRk3afrJAovHn8aueMvDpfNKVw",
+  "synopsis": "agent-first-files puts one directory in front of a person who is not at the machine holding it — read-only, nothing above the root, and no writes at all. It lists directories, reads files as text or bytes, and refuses everything outside its root, behind a bearer-protected loopback HTTP server with a generated OpenAPI 3.2 contract. Its CLI can also open the same projection as a trusted local window.",
+  "intent": [
+    "Project exactly one directory tree, read-only, with the root fixed before anything is served and every path relative to it",
+    "Refuse an excluded path, a path outside the root, and a path that was never there with one indistinguishable answer",
+    "List directories in one stable order and read files as text or as bytes, under an explicit ceiling on any single read",
+    "Expose the same projection through a bearer-protected OpenAPI 3.2 HTTP API for callers that are programs",
+    "Open the same projection as a trusted local window whose page never renders workspace content as markup",
+    "Leave the person's files unaltered: no writes, and no redaction of file contents at any boundary"
+  ],
+  "license": "MIT",
+  "mutations": [
+    "First release: project exactly one directory tree, read-only, with the root fixed before anything is served and every path resolved against it",
+    "Refuse an excluded path, a path outside the root, and a path that was never there with one indistinguishable answer, so a refusal is never an oracle for what exists",
+    "Compare containment by path component after canonicalization rather than by string prefix, and compare an opened file's identity against the resolved one so a substitution between the check and the open is refused",
+    "Follow a symlink whose target stays inside the root and list but never open one that leaves, with --no-symlinks to follow none at all",
+    "List directories in one stable order and read files as text or as bytes under an explicit ceiling on any single read",
+    "Serve the same projection to programs over a bearer-protected loopback HTTP API with a committed OpenAPI 3.2 contract and standalone JSON Schemas, returning file bytes with a media type taken from the extension and never sniffed from content",
+    "Open the same projection as a trusted local window whose page never renders workspace content as markup, and keep it current by watching exactly the directories somebody has open rather than recursing",
+    "Leave the person's files unaltered: no writes at any route, and no redaction of file contents at any boundary",
+    "Publish through Homebrew and Scoop alongside crates.io and GitHub Releases"
+  ],
+  "bonds": [
+    {
+      "relation": "depends_on",
+      "uri": "cmn://agentfirstkit.com/b3.BmXjdNCjzm7ChFXVQ6FeKzfhuSjt3HvfGRbfCepefMUR",
+      "id": "agent-first-data",
+      "reason": "CLI discovery, output routing, redaction, and protocol events follow Agent-First Data conventions"
+    },
+    {
+      "relation": "depends_on",
+      "uri": "cmn://agentfirstkit.com/b3.Fy21Hs69eXEz8rX3SVkHfyVfZDcmdRMvX4XsJkhJPP9C",
+      "id": "agent-first-ui",
+      "reason": "The `api` feature builds the affiles window on Agent-First UI, which owns the browser process, its disposable profile, the UI credential, and the security headers"
+    }
+  ],
+  "tree": {
+    "algorithm": "blob_tree_blake3_nfc",
+    "exclude_names": [
+      ".git",
+      ".cmn"
+    ],
+    "follow_rules": [
+      ".gitignore"
+    ]
+  }
+}

@@ -1,0 +1,48 @@
+{
+  "count": 8,
+  "json_schema_dialect": "https://json-schema.org/draft/2020-12/schema",
+  "schema_name": "affiles_schema_index",
+  "schema_version": 1,
+  "schemas": [
+    {
+      "component_name": "DirectoryResult",
+      "schema_name": "directory-result",
+      "schema_url": "/schemas/directory-result.schema.json"
+    },
+    {
+      "component_name": "EntryResult",
+      "schema_name": "entry-result",
+      "schema_url": "/schemas/entry-result.schema.json"
+    },
+    {
+      "component_name": "ErrorEnvelope",
+      "schema_name": "error-envelope",
+      "schema_url": "/schemas/error-envelope.schema.json"
+    },
+    {
+      "component_name": "HealthResult",
+      "schema_name": "health-result",
+      "schema_url": "/schemas/health-result.schema.json"
+    },
+    {
+      "component_name": "RootResult",
+      "schema_name": "root-result",
+      "schema_url": "/schemas/root-result.schema.json"
+    },
+    {
+      "component_name": "SchemaIndex",
+      "schema_name": "schema-index",
+      "schema_url": "/schemas/schema-index.schema.json"
+    },
+    {
+      "component_name": "TextFileResult",
+      "schema_name": "text-file-result",
+      "schema_url": "/schemas/text-file-result.schema.json"
+    },
+    {
+      "component_name": "Trace",
+      "schema_name": "trace",
+      "schema_url": "/schemas/trace.schema.json"
+    }
+  ]
+}

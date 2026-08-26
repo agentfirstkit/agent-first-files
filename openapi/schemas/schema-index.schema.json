@@ -1,0 +1,52 @@
+{
+  "$id": "https://agentfirstkit.com/schemas/affiles/v1/schema-index.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "count": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "json_schema_dialect": {
+      "type": "string"
+    },
+    "schema_name": {
+      "const": "affiles_schema_index"
+    },
+    "schema_version": {
+      "type": "integer"
+    },
+    "schemas": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "component_name": {
+            "type": "string"
+          },
+          "schema_name": {
+            "type": "string"
+          },
+          "schema_url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_name",
+          "schema_url",
+          "component_name"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_name",
+    "schema_version",
+    "json_schema_dialect",
+    "count",
+    "schemas"
+  ],
+  "title": "SchemaIndex",
+  "type": "object"
+}
