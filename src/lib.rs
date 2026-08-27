@@ -1201,6 +1201,71 @@ mod tests {
         assert_eq!(inside.text, "# hello\n");
     }
 
+    /// Windows leaves a directory by means Unix does not have, and a junction is
+    /// the one that matters most: unlike a symlink it needs no privilege, so
+    /// anything able to write inside the root can create one. That is exactly
+    /// the case the root is meant to bound, and it is the reason this test
+    /// exists rather than the symlink tests simply being ported — those need a
+    /// privilege the host may not grant, and this needs none.
+    #[cfg(windows)]
+    #[test]
+    fn a_junction_out_of_the_root_is_listed_and_never_followed() {
+        let base = tempfile::tempdir().expect("temporary base");
+        let root = base.path().join("root");
+        fs::create_dir_all(&root).expect("root");
+        fs::write(root.join("README.md"), "# hello\n").expect("a file");
+        let outside = base.path().join("outside");
+        fs::create_dir_all(&outside).expect("the directory outside");
+        fs::write(outside.join("secret.txt"), "not yours\n").expect("a file");
+
+        // `mklink /J` rather than `symlink_dir`, because a junction is what an
+        // unprivileged writer can actually make.
+        let made = std::process::Command::new("cmd")
+            .arg("/C")
+            .arg("mklink")
+            .arg("/J")
+            .arg(root.join("escape"))
+            .arg(&outside)
+            .output()
+            .expect("mklink runs");
+        assert!(
+            made.status.success(),
+            "creating a junction must not need a privilege: {}",
+            String::from_utf8_lossy(&made.stderr)
+        );
+
+        let projection = FileRoot::open(FileRootConfig::new(&root)).expect("open the root");
+
+        // The property the root promises: what is outside stays unreadable.
+        assert!(
+            matches!(
+                projection.read_text(&path("escape/secret.txt"), &ByteWindow::default()),
+                Err(FilesError::NotFound)
+            ),
+            "a junction out of the root must not be followed"
+        );
+
+        // And it is visible, because being able to see that something is there
+        // without it being reachable is the same promise made for a symlink.
+        let listing = projection
+            .list(&RelPath::root(), &Page::default())
+            .expect("list the root");
+        let escape = listing
+            .entries
+            .iter()
+            .find(|entry| entry.name == "escape")
+            .expect("the junction is listed rather than hidden");
+        assert!(
+            !escape.readable,
+            "a junction leaving the root must not be offered as readable"
+        );
+        assert_eq!(
+            escape.unsupported,
+            Some(Unsupported::OutsideRoot),
+            "a junction leaving the root must be named as such, the way a symlink is"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn never_following_links_means_no_component_of_the_path_is_one() {
