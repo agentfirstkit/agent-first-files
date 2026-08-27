@@ -35,7 +35,7 @@
 //! produces its own event.
 
 use std::collections::{BTreeSet, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Duration;
@@ -205,7 +205,21 @@ impl Translator {
     /// write must not produce even a parent event.
     fn directory_of(&self, changed: &Path) -> Option<String> {
         let relative = changed.strip_prefix(&self.root).ok()?;
-        let relative = relative.to_str()?;
+        // A listing is keyed by `/`-joined components on every platform, so the
+        // key is rebuilt from components rather than read as text. Reading it as
+        // text worked only where the platform separator already was `/`: on
+        // Windows `to_str()` hands back `src\main.rs`, nothing splits on `/`,
+        // and every nested change lands on the root's listing instead of its
+        // own directory — so watching a subdirectory reported nothing at all.
+        let mut parts = Vec::new();
+        for component in relative.components() {
+            let Component::Normal(part) = component else {
+                return None;
+            };
+            parts.push(part.to_str()?);
+        }
+        let relative = parts.join("/");
+        let relative = relative.as_str();
         if self.excluded(relative) {
             return None;
         }
@@ -279,6 +293,48 @@ mod tests {
 
     use super::*;
     use crate::FileRootConfig;
+
+    /// The listing key is `/`-joined on every platform, and the path a watcher
+    /// hands back uses the platform's separator.
+    ///
+    /// The two are only the same thing where that separator happens to be `/`.
+    /// Reading the relative path as text and splitting it on `/` therefore put
+    /// every nested change on the root's listing on Windows, so a caller
+    /// watching a subdirectory was told nothing at all.
+    ///
+    /// The paths here are built with `join` rather than written out, so this
+    /// asks the question in the platform's own spelling. On a platform whose
+    /// separator is `/` it cannot fail, which is the point: a backslash is an
+    /// ordinary character in a Unix filename and cannot stand in for one.
+    #[test]
+    fn a_nested_change_names_its_own_directory_in_the_platforms_spelling() {
+        let root = PathBuf::from("/srv/root");
+        let translator = Translator {
+            root: root.clone(),
+            exclude: Vec::new(),
+        };
+
+        assert_eq!(
+            translator.directory_of(&root.join("src").join("main.rs")),
+            Some("src".to_owned()),
+            "a change under `src` changes `src`'s listing"
+        );
+        assert_eq!(
+            translator.directory_of(&root.join("a").join("b").join("c.txt")),
+            Some("a/b".to_owned()),
+            "the key stays `/`-joined however the platform spells the path"
+        );
+        assert_eq!(
+            translator.directory_of(&root.join("top.txt")),
+            Some(String::new()),
+            "a change at the top names the root's own listing"
+        );
+        assert_eq!(
+            translator.directory_of(Path::new("/elsewhere/other.txt")),
+            None,
+            "a change outside the root is not attributed to it"
+        );
+    }
 
     /// Give a platform watcher time to register and then to report. Generous,
     /// because a slow CI box failing this test would say nothing true.
