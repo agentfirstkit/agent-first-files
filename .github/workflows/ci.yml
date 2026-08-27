@@ -56,3 +56,32 @@ jobs:
       # a request from outside the process, not merely for a library call.
       - name: Release gate
         run: ./scripts/test.sh all
+
+  # This spore ships a Windows binary in every release and, until now, tested it
+  # in none of them: the gate here is Linux and the only Windows leg lives in
+  # release.yml, which does not start until a tag does. Building what the release
+  # builds and running the suites that do not need a Unix host is what a push can
+  # answer for; anything Unix-only stays where it is.
+  windows:
+    runs-on: windows-2025
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Build what the release builds
+        run: cargo build --release --features api --bin affiles
+
+      - name: Unit suites
+        run: cargo test --features api --lib --bins
