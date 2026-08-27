@@ -1141,6 +1141,18 @@ mod tests {
         assert_eq!(path("").as_str(), "");
     }
 
+    // The three tests below build symlinks to prove the projection never
+    // follows one out of its root. They are Unix-only because creating a
+    // symlink on Windows needs a privilege the host may not grant, and a test
+    // that passes or fails on the host's privileges reports on the host rather
+    // than on this crate.
+    //
+    // What that leaves uncovered is real and worth naming: Windows reaches
+    // outside a directory by its own means — junctions, `\\?\` paths, drive-
+    // relative paths — and none of those are exercised here. The containment
+    // logic itself is platform-independent and the rest of these tests run
+    // everywhere, but a Windows-shaped escape needs Windows-shaped tests.
+    #[cfg(unix)]
     #[test]
     fn a_sibling_whose_name_merely_starts_with_the_roots_is_not_inside_it() {
         let (base, projection) = projection();
@@ -1157,6 +1169,7 @@ mod tests {
         ));
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_link_out_of_the_root_is_listed_and_never_followed() {
         let (base, projection) = projection();
@@ -1188,6 +1201,7 @@ mod tests {
         assert_eq!(inside.text, "# hello\n");
     }
 
+    #[cfg(unix)]
     #[test]
     fn never_following_links_means_no_component_of_the_path_is_one() {
         let (base, _projection) = projection();
