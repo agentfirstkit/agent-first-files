@@ -1,11 +1,12 @@
 # Agent-First Files
 
-`agent-first-files` puts one directory in front of a person who is not at the
-machine holding it — read-only, nothing above the root, and no writes at all. It
-lists directories, reads files as text or bytes, and refuses everything outside
-its root, behind a bearer-protected loopback HTTP server with a generated
-OpenAPI 3.2 contract. Its CLI can also open the same projection as a trusted
-local window.
+Show a directory on your machine to someone who is not at it — one folder,
+read-only, and nothing above it.
+
+`agent-first-files` lists directories, reads files as text or bytes, and refuses
+everything outside its root, behind a bearer-protected loopback HTTP server with
+a generated OpenAPI 3.2 contract. Its CLI can also open the same projection as a
+trusted local window.
 
 > **Ask your agent:** "Let me look at this project from my phone."
 

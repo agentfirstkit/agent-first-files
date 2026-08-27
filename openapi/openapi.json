@@ -363,7 +363,7 @@
   "info": {
     "description": "A bearer-protected, read-only projection of one directory tree. Every path is relative to the root this process was started with; nothing outside it is reachable, and a path that is excluded or outside answers exactly as one that does not exist.",
     "title": "Agent-First Files API",
-    "version": "0.1.0"
+    "version": "0.1.1"
   },
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "openapi": "3.2.0",

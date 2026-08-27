@@ -2,10 +2,10 @@
   "$schema": "https://cmn.dev/schemas/v1/spore-core.json",
   "id": "agent-first-files",
   "name": "Agent-First Files",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "domain": "agentfirstkit.com",
   "key": "ed25519.BwbSzqdDYyMN1pPW5snRk3afrJAovHn8aueMvDpfNKVw",
-  "synopsis": "agent-first-files puts one directory in front of a person who is not at the machine holding it — read-only, nothing above the root, and no writes at all. It lists directories, reads files as text or bytes, and refuses everything outside its root, behind a bearer-protected loopback HTTP server with a generated OpenAPI 3.2 contract. Its CLI can also open the same projection as a trusted local window.",
+  "synopsis": "Show a directory on your machine to someone who is not at it — one folder, read-only, and nothing above it.",
   "intent": [
     "Project exactly one directory tree, read-only, with the root fixed before anything is served and every path relative to it",
     "Refuse an excluded path, a path outside the root, and a path that was never there with one indistinguishable answer",
@@ -16,15 +16,8 @@
   ],
   "license": "MIT",
   "mutations": [
-    "First release: project exactly one directory tree, read-only, with the root fixed before anything is served and every path resolved against it",
-    "Refuse an excluded path, a path outside the root, and a path that was never there with one indistinguishable answer, so a refusal is never an oracle for what exists",
-    "Compare containment by path component after canonicalization rather than by string prefix, and compare an opened file's identity against the resolved one so a substitution between the check and the open is refused",
-    "Follow a symlink whose target stays inside the root and list but never open one that leaves, with --no-symlinks to follow none at all",
-    "List directories in one stable order and read files as text or as bytes under an explicit ceiling on any single read",
-    "Serve the same projection to programs over a bearer-protected loopback HTTP API with a committed OpenAPI 3.2 contract and standalone JSON Schemas, returning file bytes with a media type taken from the extension and never sniffed from content",
-    "Open the same projection as a trusted local window whose page never renders workspace content as markup, and keep it current by watching exactly the directories somebody has open rather than recursing",
-    "Leave the person's files unaltered: no writes at any route, and no redaction of file contents at any boundary",
-    "Publish through Homebrew and Scoop alongside crates.io and GitHub Releases"
+    "Fix directory watching on Windows: a change inside a subdirectory was attributed to the root, so a caller watching that subdirectory was told nothing at all while a caller watching the root was told about changes that were not in it; the listing key is now rebuilt from the path's components rather than by splitting on a separator only some platforms use",
+    "Run the test suites on Windows on every push, where this spore previously built a Windows binary for every release and exercised it in none of them"
   ],
   "bonds": [
     {
