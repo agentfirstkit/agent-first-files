@@ -1201,6 +1201,38 @@ mod tests {
         assert_eq!(inside.text, "# hello\n");
     }
 
+    /// The spellings that climb out on Windows and mean nothing on Unix.
+    ///
+    /// `RelPath::parse` walks `Path::components()`, which parses the way the
+    /// host does — and that is what makes it safe here, in a way worth pinning
+    /// because it is not obvious. On Windows `..\..` is two `ParentDir`
+    /// components and `C:secret.txt` is a `Prefix`, so both are refused before
+    /// anything touches the filesystem. On Unix each is one ordinary file name,
+    /// harmless because that host will never read a backslash as a separator.
+    ///
+    /// The property is therefore that the platform which would *act* on these
+    /// is the platform that rejects them. If parsing were ever replaced with
+    /// something written by hand — splitting on `/` and checking for `..` — a
+    /// Windows server would start honouring every one of these.
+    #[cfg(windows)]
+    #[test]
+    fn the_windows_spellings_that_climb_out_are_refused_before_the_filesystem_sees_them() {
+        for raw in [
+            r"..\..",
+            r"..\..\Windows\System32",
+            r"src\..\..\outside",
+            r"C:secret.txt",
+            r"C:\Windows\System32\config\SAM",
+            r"\\?\C:\Windows",
+            r"\\server\share\secret",
+        ] {
+            assert!(
+                matches!(RelPath::parse(raw), Err(FilesError::InvalidPath(_))),
+                "`{raw}` must be refused rather than resolved"
+            );
+        }
+    }
+
     /// Windows leaves a directory by means Unix does not have, and a junction is
     /// the one that matters most: unlike a symlink it needs no privilege, so
     /// anything able to write inside the root can create one. That is exactly
