@@ -433,6 +433,13 @@ mod tests {
 
     /// A watch cannot be registered on something the caller could not have
     /// listed, because it goes through the same resolution a read does.
+    ///
+    /// Unix-only for the reason the projection's own link tests are: the only
+    /// way to try this is a symlink, and creating one on Windows needs a
+    /// privilege the host may not grant. The Windows ways out of a directory —
+    /// junctions, `\\?\` paths, drive-relative paths — are not covered here
+    /// either, for watches any more than for reads.
+    #[cfg(unix)]
     #[test]
     fn a_path_outside_the_root_cannot_be_watched() {
         let base = tempfile::tempdir().expect("temp");
