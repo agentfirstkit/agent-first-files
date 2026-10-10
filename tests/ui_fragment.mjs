@@ -10,7 +10,10 @@ const testSource = source.replace(
     restorePaths,
     view,
     say,
+    applyRuntimeState,
+    start: () => { started = true; },
     open,
+    setRuntime: runtime => { sessionRuntime = runtime; },
     isOpen: () => !viewer.hidden,
     viewedPath: () => (viewing ? viewing.path : null),
   };`,
@@ -33,10 +36,26 @@ function stubElement() {
     title: '',
     dataset: {},
     style: {},
+    children: [],
+    parentNode: null,
     addEventListener(type, handler) { listeners[type] = handler; },
-    append() {},
-    replaceChildren() {},
-    remove() {},
+    append(...children) {
+      for (const child of children) {
+        child.remove();
+        child.parentNode = this;
+        this.children.push(child);
+      }
+    },
+    replaceChildren(...children) {
+      for (const child of this.children) child.parentNode = null;
+      this.children = [];
+      this.append(...children);
+    },
+    remove() {
+      if (!this.parentNode) return;
+      this.parentNode.children = this.parentNode.children.filter(child => child !== this);
+      this.parentNode = null;
+    },
     focus() {},
     setAttribute() {},
     getAttribute() { return null; },
@@ -293,3 +312,188 @@ assert.equal(
   'false',
   'delivered as its own window there is no head but this one',
 );
+
+/* Execute the image branch and its real handlers. The stub records a decode
+ * attempt and lets each load/error arrive at the same boundary as a browser;
+ * it does not pretend to decode image bytes. */
+function imageReply(name, truncated) {
+  return {
+    type: 'read_bytes',
+    byte_offset: 0,
+    total_bytes: 2 * 1024 * 1024,
+    truncated,
+    blob: {
+      blob_url: `__afui/blobs/${name}`,
+      media_type: 'image/png',
+      size_bytes: truncated ? 1024 * 1024 : 2 * 1024 * 1024,
+    },
+  };
+}
+
+function imagePage(read) {
+  const page = load();
+  const released = [];
+  const attempts = [];
+  page.setRuntime({
+    call(action) {
+      assert.equal(action.type, 'read_bytes');
+      assert.equal(action.offset_bytes, 0);
+      return read(action);
+    },
+    blobUrl(blob) {
+      attempts.push({blob, metadata: page.elements.get('viewer-meta').textContent});
+      return blob.blob_url;
+    },
+    releaseBlob(blob) { released.push(blob); },
+  });
+  return {page, released, attempts, body: page.elements.get('viewer-body')};
+}
+
+const imageEntry = name => ({path: name, name, kind: 'file', size_bytes: 2 * 1024 * 1024});
+const preview = body => body.children.find(child => child.className === 'preview');
+
+{
+  const reply = imageReply('partial-success', true);
+  const {page, body, attempts, released} = imagePage(() => reply);
+  await page.view(imageEntry('large.png'));
+  const image = preview(body);
+  assert.ok(image, 'truncation must still attempt an image preview');
+  assert.equal(image.src, reply.blob.blob_url);
+  assert.equal(image.hidden, true);
+  assert.match(attempts[0].metadata, /preview incomplete/, 'the limit is visible before decoding');
+  image.listeners.load();
+  assert.equal(image.hidden, false, 'a partial image that decodes is still shown');
+  assert.deepEqual(body.children, [image], 'a successful load clears only the loading message');
+  assert.match(page.elements.get('viewer-meta').textContent, /preview incomplete/);
+  assert.deepEqual(released, [], 'the displayed image keeps its blob until the viewer closes');
+  page.place.options.hide();
+  assert.deepEqual(released, [reply.blob]);
+  assert.deepEqual(body.children, []);
+}
+
+{
+  const reply = imageReply('partial-failure', true);
+  const {page, body, attempts, released} = imagePage(() => reply);
+  await page.view(imageEntry('large.png'));
+  assert.equal(attempts.length, 1, 'a partial image is tried rather than refused');
+  preview(body).listeners.error();
+  assert.equal(preview(body), undefined);
+  assert.match(body.children[0].textContent, /preview is incomplete/);
+  assert.doesNotMatch(body.children[0].textContent, /could not be loaded/);
+  assert.match(page.elements.get('viewer-meta').textContent, /preview incomplete/);
+  assert.deepEqual(released, [reply.blob], 'a decode failure releases its body');
+  page.place.options.hide();
+  assert.deepEqual(released, [reply.blob], 'closing the failed preview does not release twice');
+}
+
+{
+  const reply = imageReply('ordinary-failure', false);
+  const {page, body, released} = imagePage(() => reply);
+  await page.view(imageEntry('broken.png'));
+  preview(body).listeners.error();
+  assert.equal(body.children[0].textContent, 'This image could not be loaded.');
+  assert.doesNotMatch(page.elements.get('viewer-meta').textContent, /preview incomplete/);
+  assert.deepEqual(released, [reply.blob]);
+  page.place.options.hide();
+  assert.deepEqual(released, [reply.blob]);
+}
+
+{
+  let finishOld;
+  const waiting = new Promise(resolve => { finishOld = resolve; });
+  const oldReply = imageReply('late-partial', true);
+  const currentReply = imageReply('current', false);
+  const {page, body, attempts, released} = imagePage(action =>
+    action.path === 'old.png' ? waiting : currentReply,
+  );
+  const oldView = page.view(imageEntry('old.png'));
+  await page.view(imageEntry('current.png'));
+  const currentImage = preview(body);
+  const currentMetadata = page.elements.get('viewer-meta').textContent;
+  finishOld(oldReply);
+  await oldView;
+  assert.deepEqual(released, [oldReply.blob], 'a stale read reply releases its unused body');
+  assert.equal(attempts.length, 1, 'a stale reply must never start decoding');
+  assert.equal(preview(body), currentImage);
+  assert.equal(page.elements.get('viewer-meta').textContent, currentMetadata);
+  assert.doesNotMatch(currentMetadata, /preview incomplete/);
+  currentImage.listeners.load();
+  page.place.options.hide();
+  assert.deepEqual(released, [oldReply.blob, currentReply.blob]);
+}
+
+{
+  const oldReply = imageReply('old-partial', true);
+  const currentReply = imageReply('new-complete', false);
+  const {page, body, released} = imagePage(action =>
+    action.path === 'old.png' ? oldReply : currentReply,
+  );
+  await page.view(imageEntry('old.png'));
+  const oldImage = preview(body);
+  await page.view(imageEntry('current.png'));
+  const currentImage = preview(body);
+  oldImage.listeners.load();
+  oldImage.listeners.error();
+  assert.equal(preview(body), currentImage, 'late image callbacks leave the current preview intact');
+  assert.equal(currentImage.hidden, true, 'only this image\'s own load may reveal it');
+  assert.doesNotMatch(page.elements.get('viewer-meta').textContent, /preview incomplete/);
+  assert.deepEqual(released, [oldReply.blob], 'late callbacks must not release the current image');
+  currentImage.listeners.load();
+  page.place.options.hide();
+  assert.deepEqual(released, [oldReply.blob, currentReply.blob]);
+}
+
+
+{
+  const page = load();
+  const body = page.elements.get('viewer-body');
+  let finishRead;
+  let readingStarted;
+  const readStarted = new Promise(resolve => { readingStarted = resolve; });
+  let pending = false;
+  const entry = {path: 'notes.txt', name: 'notes.txt', kind: 'file', size_bytes: 10};
+  page.setRuntime({
+    call(action) {
+      assert.equal(action.type, 'read_text');
+      return {type: 'read_text', blob: {blob_url: 'text'}, file: {total_bytes: 10, truncated: false}};
+    },
+    fetchBlob() {
+      return {text: () => pending ? new Promise(resolve => { finishRead = resolve; readingStarted(); }) : Promise.resolve('old text')};
+    },
+    releaseBlob() {},
+  });
+  const first = page.view(entry);
+  assert.equal(body.children[0].dataset.state, 'loading');
+  await first;
+  const old = body.children[0];
+  pending = true;
+  page.start();
+  const refreshed = page.applyRuntimeState({type: 'watching', changed_paths: ['']});
+  await readStarted;
+  assert.equal(body.children[0], old, 'unrelated root changes retain displayed text during refresh');
+  assert.equal(body.children[0].textContent, 'old text');
+  assert.ok(body.children.every(child => child.dataset.state !== 'loading'));
+  finishRead('new text');
+  await refreshed;
+  assert.equal(body.children[0].textContent, 'new text');
+}
+
+{
+  const oldReply = imageReply('refresh-old', false);
+  const newReply = imageReply('refresh-new', false);
+  let reply = oldReply;
+  const {page, body, released} = imagePage(() => reply);
+  await page.view(imageEntry('same.png'));
+  const oldImage = preview(body);
+  oldImage.listeners.load();
+  reply = newReply;
+  await page.view(imageEntry('same.png'));
+  const newImage = body.children.find(child => child !== oldImage);
+  assert.equal(oldImage.parentNode, body, 'old image remains displayed while replacement decodes');
+  assert.deepEqual(released, []);
+  newImage.listeners.load();
+  assert.deepEqual(body.children, [newImage]);
+  assert.deepEqual(released, [oldReply.blob]);
+  page.place.options.hide();
+  assert.deepEqual(released, [oldReply.blob, newReply.blob]);
+}

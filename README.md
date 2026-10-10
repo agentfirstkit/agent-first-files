@@ -42,7 +42,8 @@ the obvious version fails:
   cannot smuggle a path out before the last component is looked at;
 - an excluded path, a path outside the root, and a path that was never there all
   answer identically. A refusal you can tell apart from an absence is an oracle
-  for what exists.
+  for what exists. Exclusions check both the requested spelling and the resolved
+  target. Hard links have independent names; exclude each name that must stay hidden.
 
 A symlink whose target stays inside the root is followed, because a source tree
 full of them has to remain browsable. One that leaves is listed, named, and
@@ -110,22 +111,23 @@ brew install agentfirstkit/tap/affiles   # macOS / Linux
 scoop bucket add agentfirstkit https://github.com/agentfirstkit/scoop-bucket && scoop install affiles   # Windows
 
 # or from crates.io
-cargo install agent-first-files --locked --features api
+cargo install agent-first-files --locked
 ```
 
 Prebuilt archives are also available from
 [GitHub Releases](https://github.com/agentfirstkit/agent-first-files/releases).
 
-The `affiles` target declares `required-features = ["api"]`, so a plain
-`cargo install agent-first-files` installs nothing — and says so, naming the
-flag, rather than leaving a working-looking install with no executable.
-Depending on this crate as a library needs no feature at all, which is the whole
-point of the gate: the core is `std` only, with no async runtime and no HTTP.
+A source install builds the same feature set as the published packages.
+Depending on this crate as a library wants `default-features = false`: the core
+is `std` only, with no async runtime and no HTTP.
 
 ## CLI
 
-`affiles` emits one AFDATA protocol event per run. JSON is the default; YAML and
-plain output are also available.
+Finite `affiles` commands return a terminal AFDATA protocol event. `ui` and
+`api serve` emit an ordered event stream: first ready progress, then a terminal
+event when they stop. Parse events individually and use `kind` and the
+progress `phase` to distinguish readiness from completion. JSON is the default;
+YAML and plain output are also available.
 
 ```bash
 # Open a window on this machine, hiding what should not leave it.
@@ -169,7 +171,7 @@ writes into. `skill install` targets Codex, Claude Code, opencode and Hermes;
 
 ```bash
 affiles skill install --agent all --scope workspace
-affiles skill status
+affiles skill status --agent all --scope workspace
 ```
 
 ## Replacing the page

@@ -31,6 +31,24 @@ ambiguity this API must not have.
 Every read is bounded by an explicit ceiling on any single response, so one
 enormous file cannot become the caller's problem.
 
+Directory, entry and file query endpoints reject malformed values and unknown
+fields with HTTP `400`, an AFDATA error envelope and the stable `invalid_query`
+code. The message does not echo the rejected value. A successful bytes read
+still returns the file bytes directly.
+
+Text reads are strict UTF-8 and refuse NUL. When a truncated window cuts through
+its final character, the text response omits that incomplete tail, at most three
+bytes; `byte_length` is the returned text length, while `total_bytes` and
+`byte_offset` retain their file meaning. An invalid sequence within the window,
+an unaligned starting offset, or an incomplete sequence at the real EOF still
+returns `not_text`. Byte reads return the original window unchanged.
+
+The HTTP handlers run filesystem work on Tokio's blocking pool. UI actions use
+the same boundary and keep their action order; the change-notification loop can
+still publish updates while a read is pending. Image previews marked
+`truncated` show that the preview is incomplete and still attempt to decode the
+available bytes. The warning remains if that partial image cannot be decoded.
+
 ## Delivery
 
 Delivery is hosted by [Agent-First

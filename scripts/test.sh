@@ -37,16 +37,16 @@ run_static() {
   run_clippy
   # Every tier a consumer can ask for, because a tier nothing builds is a tier
   # that compiles by accident.
-  run_clippy --features watch
-  run_clippy --features api
+  run_clippy --no-default-features
+  run_clippy --no-default-features --features watch
 }
 
 run_unit() {
   afdata_run --quiet node tests/ui_fragment.mjs
   afdata_run --quiet cargo test --all-targets
-  afdata_run --quiet cargo test --all-targets --features watch
-  afdata_run --quiet cargo test --all-targets --features api
-  afdata_run --quiet cargo test --doc --features api
+  afdata_run --quiet cargo test --doc
+  afdata_run --quiet cargo test --all-targets --no-default-features
+  afdata_run --quiet cargo test --all-targets --no-default-features --features watch
   check_core_tier_dependencies
 }
 
@@ -55,7 +55,7 @@ run_unit() {
 # async runtime, or a platform filesystem-watching backend by doing so.
 check_core_tier_dependencies() {
   local tree dependency
-  tree="$(cargo tree --edges normal --prefix none)"
+  tree="$(cargo tree --no-default-features --edges normal --prefix none)"
   for dependency in axum tokio agent-first-ui minijinja notify async-stream; do
     if [[ "$tree" == *"$dependency v"* ]]; then
       afdata_error unexpected_dependency \
@@ -70,7 +70,7 @@ check_core_tier_dependencies() {
 # changes — including on a release bump, which rewrites the version inside it.
 check_contract_drift() {
   local exported="$TEST_TMP/openapi"
-  afdata_run --quiet cargo run --quiet --features api --bin affiles -- \
+  afdata_run --quiet cargo run --quiet --bin affiles -- \
     api export --directory "$exported" --force
   if ! diff -ru "$ROOT_PATH/openapi" "$exported" >"$TEST_TMP/contract.diff" 2>&1; then
     afdata_error contract_drift \
@@ -92,12 +92,13 @@ run_smoke() {
   local token="affiles-smoke-token-0123456789-abcdef"
   local serve_pid url status body
 
-  afdata_run --quiet cargo build --quiet --features api --bin affiles
+  afdata_run --quiet cargo build --quiet --bin affiles
   mkdir -p "$workspace/src" "$outside"
   printf '# hello\n' >"$workspace/README.md"
   printf 'TOKEN=1\n' >"$workspace/.env"
   printf 'not yours\n' >"$outside/secret"
   ln -s "$outside/secret" "$workspace/escape"
+  ln -s .env "$workspace/alias"
 
   AFFILES_API_ACCESS_TOKEN_SECRET="$token" "$binary" api serve \
     --root "$workspace" --port 0 --exclude '.env' >"$log" 2>&1 &
@@ -147,7 +148,7 @@ run_smoke() {
   esac
   # Excluded entries are absent, not refused-with-a-reason.
   case "$body" in
-    *.env*)
+    *.env*|*alias*)
       afdata_error excluded_entry_listed "an --exclude match appears in a listing" || :
       return 1
       ;;
@@ -157,6 +158,8 @@ run_smoke() {
   # its exact code rather than by "it failed somehow".
   local -a refused=(
     "/v1/files/text?path=.env|404|entry_not_found"
+    "/v1/files/text?path=.ENV|404|entry_not_found"
+    "/v1/files/text?path=alias|404|entry_not_found"
     "/v1/files/text?path=escape|404|entry_not_found"
     "/v1/files/text?path=nope|404|entry_not_found"
     "/v1/files/text?path=../outside/secret|400|invalid_path"
@@ -177,8 +180,14 @@ run_smoke() {
     fi
   done
 
-  kill "$serve_pid" 2>/dev/null || true
-  wait "$serve_pid" 2>/dev/null || true
+  kill -TERM "$serve_pid"
+  wait "$serve_pid"
+  tail -n 1 "$log" > "$TEST_TMP/stopped.json"
+  if [ "$(afdata value "$TEST_TMP/stopped.json" kind)" != result ] || \
+     [ "$(afdata value "$TEST_TMP/stopped.json" result.stopped)" != true ]; then
+    afdata_error terminal_event_missing "SIGTERM did not emit the stopped result" || :
+    return 1
+  fi
   # shellcheck disable=SC2064
   trap "rm -rf '$TEST_TMP'" EXIT
 }

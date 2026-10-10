@@ -4,6 +4,7 @@
   "additionalProperties": false,
   "properties": {
     "byte_length": {
+      "description": "The returned text length in bytes, excluding an incomplete UTF-8 tail omitted from a truncated window",
       "minimum": 0,
       "type": "integer"
     },

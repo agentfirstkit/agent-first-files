@@ -36,8 +36,8 @@
 
 use std::collections::{BTreeSet, HashSet};
 use std::path::{Component, Path, PathBuf};
-use std::sync::Mutex;
 use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
@@ -75,7 +75,7 @@ pub struct RootWatcher {
     /// The real paths currently registered, so a replacement can add and remove
     /// rather than tear the whole set down and rebuild it — rebuilding would
     /// drop events for directories that stayed open throughout.
-    watched: Mutex<HashSet<PathBuf>>,
+    watched: Arc<Mutex<HashSet<PathBuf>>>,
 }
 
 impl FileRoot {
@@ -91,10 +91,22 @@ impl FileRoot {
     /// viewer at all.
     pub fn watch(&self) -> Result<(RootWatcher, Receiver<WatchEvent>)> {
         let (raw_sender, raw_receiver) = channel::<PathBuf>();
+        let watched = Arc::new(Mutex::new(HashSet::new()));
+        let callback_watched = Arc::clone(&watched);
         let watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
             let Ok(event) = event else {
                 return;
             };
+            if matches!(
+                event.kind,
+                notify::EventKind::Remove(_)
+                    | notify::EventKind::Modify(notify::event::ModifyKind::Name(_))
+            ) && let Ok(mut watched) = callback_watched.lock()
+            {
+                for path in &event.paths {
+                    watched.remove(path);
+                }
+            }
             for path in event.paths {
                 // A closed channel means the watcher outlived its reader, which
                 // is a shutdown rather than something to report.
@@ -115,7 +127,7 @@ impl FileRoot {
         Ok((
             RootWatcher {
                 watcher: Mutex::new(watcher),
-                watched: Mutex::new(HashSet::new()),
+                watched,
             },
             events,
         ))
@@ -156,36 +168,56 @@ impl RootWatcher {
             wanted.insert(root.resolve_directory(path)?);
         }
 
+        // Held for the whole replacement, so two replacements never interleave.
         let mut watcher = self.watcher.lock().map_err(|_| poisoned())?;
-        let mut watched = self.watched.lock().map_err(|_| poisoned())?;
+
+        // The registry lock is never held across a call into the backend.
+        // Every backend's `watch()` / `unwatch()` waits for the thread that
+        // delivers events, and the callback on that thread takes this same
+        // lock when something is removed or renamed — so holding it here while
+        // calling the backend is two threads each waiting for the other, and a
+        // viewer that never hears from this process again.
+        //
+        // The additions are recorded before they are registered rather than
+        // after: a removal reported in between then takes the path back out,
+        // and the next replacement registers the rebuilt directory. Recorded
+        // afterwards, that removal would be overwritten and the dead watch
+        // kept as if it were live.
+        let (adding, removing) = {
+            let mut watched = self.watched.lock().map_err(|_| poisoned())?;
+            let adding: Vec<PathBuf> = wanted.difference(&watched).cloned().collect();
+            let removing: Vec<PathBuf> = watched.difference(&wanted).cloned().collect();
+            watched.extend(adding.iter().cloned());
+            (adding, removing)
+        };
 
         // Registrations first, and undone as a group if any of them is refused,
         // so the authoritative set is never a set this process is not actually
         // watching.
-        let mut added: Vec<PathBuf> = Vec::new();
-        for path in wanted.difference(&watched) {
+        for (index, path) in adding.iter().enumerate() {
             // Never recursive. A subtree nobody opened is a subtree nobody is
             // shown, so watching it would be work with no reader.
             if watcher.watch(path, RecursiveMode::NonRecursive).is_err() {
-                for rollback in &added {
+                for rollback in &adding[..index] {
                     let _ignored = watcher.unwatch(rollback);
+                }
+                let mut watched = self.watched.lock().map_err(|_| poisoned())?;
+                for path in &adding {
+                    watched.remove(path);
                 }
                 return Err(crate::FilesError::WatchRegistrationFailed);
             }
-            added.push(path.clone());
         }
 
-        // Removals last, and a removal that fails keeps its path in the set.
-        // Still being watched costs an event the viewer will ignore; claiming
-        // it is not watched when it is would make the next `set_paths` skip a
-        // registration it still needs.
-        let mut next = wanted.clone();
-        for gone in watched.difference(&wanted) {
-            if watcher.unwatch(gone).is_err() {
-                next.insert(gone.clone());
-            }
+        // A backend can already have removed a deleted inode's watch. Forget
+        // it even when unwatch fails, so a rebuilt directory can be registered.
+        for gone in &removing {
+            let _ignored = watcher.unwatch(gone);
         }
-        *watched = next;
+        let mut watched = self.watched.lock().map_err(|_| poisoned())?;
+        for gone in &removing {
+            watched.remove(gone);
+        }
         Ok(())
     }
 }
@@ -394,6 +426,112 @@ mod tests {
             }
         );
         assert!(quiet_for(&events, Duration::from_millis(400)));
+    }
+
+    #[test]
+    fn rebuilt_directory_is_registered_again_with_the_same_interest() {
+        check_rebuilt_directory(false);
+    }
+
+    #[test]
+    fn removed_interest_can_be_readded_after_directory_rebuild() {
+        check_rebuilt_directory(true);
+    }
+
+    fn check_rebuilt_directory(collapse: bool) {
+        let base = tempfile::tempdir().unwrap();
+        fs::create_dir(base.path().join("a")).unwrap();
+        let root = FileRoot::open(FileRootConfig::new(base.path())).unwrap();
+        let (watcher, events) = root.watch().unwrap();
+        let interest = [RelPath::root(), RelPath::parse("a").unwrap()];
+        watcher.set_paths(&root, &interest).unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        fs::remove_dir(base.path().join("a")).unwrap();
+        assert!(wait_for(&events, ""), "directory removal must be observed");
+        if collapse {
+            watcher.set_paths(&root, &[]).unwrap();
+        }
+        fs::create_dir(base.path().join("a")).unwrap();
+        watcher.set_paths(&root, &interest).unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        while events.try_recv().is_ok() {}
+        fs::write(base.path().join("a/new.txt"), "new").unwrap();
+        assert!(wait_for(&events, "a"), "rebuilt directory must be live");
+    }
+
+    /// Replacing the watched set while the watched directories are being
+    /// renamed into, emptied and rebuilt must finish.
+    ///
+    /// Every backend's `watch()` / `unwatch()` waits for the thread that
+    /// delivers events, and the event callback takes the registry lock on a
+    /// removal or a rename. Calling the backend with that lock held therefore
+    /// waits on a thread that is waiting on the caller. The whole exercise
+    /// runs under a deadline, so the failure is a failed test and not a hung
+    /// run.
+    #[test]
+    fn replacing_the_set_during_renames_and_rebuilds_does_not_deadlock() {
+        let base = tempfile::tempdir().unwrap();
+        for directory in ["a", "b", "c"] {
+            fs::create_dir(base.path().join(directory)).unwrap();
+        }
+        let root = FileRoot::open(FileRootConfig::new(base.path())).unwrap();
+        let (watcher, _events) = root.watch().unwrap();
+        let churn_for = Duration::from_secs(6);
+        let (done_sender, done) = channel::<usize>();
+
+        let churn_root = base.path().to_path_buf();
+        let churn_done = done_sender.clone();
+        std::thread::spawn(move || {
+            let started = Instant::now();
+            let mut rounds = 0;
+            while started.elapsed() < churn_for {
+                // An atomic save, then `rm -rf dist && build`, in each
+                // directory that is being watched.
+                for directory in ["a", "b"] {
+                    let directory = churn_root.join(directory);
+                    fs::write(directory.join("file.tmp"), "x").unwrap();
+                    fs::rename(directory.join("file.tmp"), directory.join("file")).unwrap();
+                    fs::remove_file(directory.join("file")).unwrap();
+                    fs::create_dir_all(directory.join("dist")).unwrap();
+                    fs::write(directory.join("dist/out"), "x").unwrap();
+                    fs::remove_dir_all(directory.join("dist")).unwrap();
+                }
+                rounds += 1;
+            }
+            let _ignored = churn_done.send(rounds);
+        });
+
+        std::thread::spawn(move || {
+            let path = |raw: &str| RelPath::parse(raw).unwrap();
+            // Each differs from the one before it, so every call both
+            // registers and removes.
+            let sets = [
+                vec![RelPath::root(), path("a")],
+                vec![path("a"), path("b")],
+                vec![RelPath::root(), path("b"), path("c")],
+                vec![path("c")],
+            ];
+            let started = Instant::now();
+            let mut rounds = 0;
+            while started.elapsed() < churn_for {
+                watcher
+                    .set_paths(&root, &sets[rounds % sets.len()])
+                    .unwrap();
+                rounds += 1;
+                // Long enough for the backend to deliver what happened in
+                // between; a stream replaced before it reports anything never
+                // runs the callback at all.
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            let _ignored = done_sender.send(rounds);
+        });
+
+        for _thread in 0..2 {
+            let rounds = done
+                .recv_timeout(Duration::from_secs(30))
+                .expect("set_paths and the event callback are waiting on each other");
+            assert!(rounds > 0, "each thread must have done some of the work");
+        }
     }
 
     #[test]

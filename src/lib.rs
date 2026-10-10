@@ -561,14 +561,18 @@ impl FileRoot {
             {
                 continue;
             }
-            // Exclusion is decided on the name and costs no I/O, so it is
-            // decided here rather than after the window is chosen. An excluded
-            // entry that occupied a slot would let a directory whose first page
-            // happens to be all excluded come back empty, with no cursor and
-            // nothing to say the rest exists.
+            // Exclusion is decided here rather than after the window is
+            // chosen. An excluded entry that occupied a slot would let a
+            // directory whose first page happens to be all excluded come back
+            // empty, with no cursor and nothing to say the rest exists. It is
+            // decided on names alone for everything but a link, which is the
+            // one kind of entry whose real location has to be asked for.
             if let Some(text) = file_name.to_str()
                 && self.excluded(&path.child(text))
             {
+                continue;
+            }
+            if self.excluded_entry(&entry) {
                 continue;
             }
             // One past the page, so the presence of a next page is known
@@ -596,8 +600,8 @@ impl FileRoot {
                 next_cursor = last_returned.as_deref().map(Self::encode_cursor);
                 break;
             }
-            // Only an entry whose type this process could not read reaches
-            // `None` now; exclusion was settled during the scan.
+            // Entries can disappear or become excluded between the scan
+            // and description, so recheck before returning them.
             let Some(described) = self.describe(path, &entry.file_name(), &entry) else {
                 continue;
             };
@@ -691,12 +695,27 @@ impl FileRoot {
     /// Refuses anything with a NUL or an invalid encoding in the slice rather
     /// than handing back replacement characters: a caller that asked for text
     /// and got mojibake has been told the wrong thing about the file.
+    /// When a truncated window ends partway through a UTF-8 character, its
+    /// incomplete tail of at most three bytes is omitted. The returned length
+    /// counts only the complete text; starting inside a character is refused.
     pub fn read_text(&self, path: &RelPath, window: &ByteWindow) -> Result<TextRead> {
         let read = self.read_bytes(path, window)?;
         if read.bytes.contains(&0) {
             return Err(FilesError::NotText);
         }
-        let text = String::from_utf8(read.bytes).map_err(|_| FilesError::NotText)?;
+        let text = match String::from_utf8(read.bytes) {
+            Ok(text) => text,
+            Err(error) => {
+                let utf8 = error.utf8_error();
+                let tail_bytes = error.as_bytes().len() - utf8.valid_up_to();
+                if !read.truncated || utf8.error_len().is_some() || tail_bytes > 3 {
+                    return Err(FilesError::NotText);
+                }
+                let mut bytes = error.into_bytes();
+                bytes.truncate(utf8.valid_up_to());
+                String::from_utf8(bytes).map_err(|_| FilesError::NotText)?
+            }
+        };
         Ok(TextRead {
             byte_offset: read.byte_offset,
             byte_length: text.len() as u64,
@@ -789,6 +808,9 @@ impl FileRoot {
         if self.excluded(&path) {
             return None;
         }
+        if self.excluded_entry(entry) {
+            return None;
+        }
         let link = entry.file_type().ok()?;
         let resolved = fs::metadata(entry.path());
         let inside = !link.is_symlink() || self.follows(&entry.path());
@@ -848,6 +870,9 @@ impl FileRoot {
         if !self.contains(&real) {
             return Err(FilesError::NotFound);
         }
+        if self.excluded_real(&real) {
+            return Err(FilesError::NotFound);
+        }
         let metadata = fs::metadata(&real)?;
         Ok(Resolved { real, metadata })
     }
@@ -886,6 +911,53 @@ impl FileRoot {
             .is_ok_and(|target| self.contains(&target))
     }
 
+    /// Whether what a directory entry really is, is excluded.
+    ///
+    /// The entry came from reading its parent's real path, so for anything
+    /// that is not a link its own path is already real and the answer needs no
+    /// I/O. Only a link has to be resolved — and a link that will not resolve
+    /// is judged by where it says it points, because the alternative is to
+    /// list it with that text attached: `dangling -> secrets/missing` names
+    /// the excluded directory to anyone who can list this one, and so does a
+    /// link into a directory this process may not enter.
+    fn excluded_entry(&self, entry: &fs::DirEntry) -> bool {
+        let path = entry.path();
+        // An entry whose type cannot be read is treated as a link: resolving
+        // it is the question that cannot be answered wrongly.
+        if entry.file_type().is_ok_and(|kind| !kind.is_symlink()) {
+            return self.excluded_real(&path);
+        }
+        match path.canonicalize() {
+            Ok(real) => self.excluded_real(&real),
+            Err(_) => match fs::read_link(&path) {
+                Ok(target) => self.excluded_real(&lexical_target(&path, &target)),
+                // Neither resolvable nor readable as a link: there is nothing
+                // left to decide it by, so it is not shown.
+                Err(_) => true,
+            },
+        }
+    }
+
+    fn excluded_real(&self, real: &Path) -> bool {
+        let Ok(relative) = real.strip_prefix(&self.root) else {
+            return false;
+        };
+        let candidate = relative
+            .components()
+            .map(|component| component.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/");
+        // The root itself is never excluded, the same way `excluded` answers
+        // for the empty path: a bare `*` matches the empty name, and a root
+        // that excluded itself would answer "not found" for its own listing.
+        if candidate.is_empty() {
+            return false;
+        }
+        self.exclude
+            .iter()
+            .any(|pattern| pattern_excludes(pattern, &candidate))
+    }
+
     fn excluded(&self, path: &RelPath) -> bool {
         let candidate = path.as_str();
         if candidate.is_empty() {
@@ -916,6 +988,28 @@ fn modified(metadata: &fs::Metadata) -> Option<String> {
     let modified = metadata.modified().ok()?;
     let stamp = chrono::DateTime::<chrono::Utc>::from(modified);
     Some(stamp.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+}
+
+/// Where a link's text points, worked out without touching the filesystem.
+///
+/// Only for a link that could not be resolved, where the text is all there is.
+/// `..` is taken at its word rather than followed through whatever the
+/// component before it really is, which is as close as text alone gets.
+fn lexical_target(link: &Path, target: &Path) -> PathBuf {
+    let mut resolved = link.parent().map(Path::to_path_buf).unwrap_or_default();
+    for component in target.components() {
+        match component {
+            std::path::Component::Prefix(_) | std::path::Component::RootDir => {
+                resolved = PathBuf::from(component.as_os_str());
+            }
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                resolved.pop();
+            }
+            std::path::Component::Normal(part) => resolved.push(part),
+        }
+    }
+    resolved
 }
 
 fn link_target(link: &Path) -> Option<String> {
@@ -1099,6 +1193,37 @@ fn glob_matches(pattern: &str, candidate: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn excluded_targets_cannot_be_accessed_through_aliases() {
+        let base = tempfile::tempdir().unwrap();
+        std::fs::create_dir(base.path().join("secrets")).unwrap();
+        std::fs::write(base.path().join("secrets/key.pem"), "secret").unwrap();
+        std::fs::write(base.path().join(".env"), "TOKEN=secret").unwrap();
+        std::os::unix::fs::symlink("secrets", base.path().join("latest")).unwrap();
+        std::os::unix::fs::symlink(".env", base.path().join("alias")).unwrap();
+        let root = FileRoot::open(
+            FileRootConfig::new(base.path())
+                .with_exclude(["secrets/**".to_owned(), ".env".to_owned()]),
+        )
+        .unwrap();
+        for path in ["latest", "latest/key.pem", "alias", ".ENV"] {
+            assert!(
+                matches!(
+                    root.resolve(&RelPath::parse(path).unwrap()),
+                    Err(FilesError::NotFound)
+                ),
+                "{path}"
+            );
+        }
+        assert!(
+            root.list(&RelPath::parse("").unwrap(), &Page::default())
+                .unwrap()
+                .entries
+                .is_empty()
+        );
+    }
+
     use super::*;
 
     /// A root with something in it, and a neighbour that is not in it.
@@ -1440,6 +1565,140 @@ mod tests {
         assert_eq!(names, vec!["visible.txt".to_owned()]);
     }
 
+    /// A link that cannot be resolved is judged by where it says it points.
+    ///
+    /// Listing it would publish its target text, which is the excluded name.
+    #[cfg(unix)]
+    #[test]
+    fn a_dangling_link_into_an_excluded_directory_is_not_listed() {
+        let (base, _projection) = projection();
+        let root = base.path().join("root");
+        fs::create_dir_all(root.join("sub")).expect("a directory");
+        std::os::unix::fs::symlink("secrets/missing", root.join("dangling")).expect("link");
+        std::os::unix::fs::symlink("../secrets/missing", root.join("sub/dangling")).expect("link");
+        // Dangling too, and pointing nowhere excluded: still listed, so the
+        // rule is about the target and not about links that fail to resolve.
+        std::os::unix::fs::symlink("nowhere", root.join("lost")).expect("link");
+        let projection =
+            FileRoot::open(FileRootConfig::new(&root).with_exclude(["secrets/**".to_owned()]))
+                .expect("open the root");
+
+        let names = |directory: &str| -> Vec<String> {
+            projection
+                .list(&path(directory), &Page::default())
+                .expect("a listing")
+                .entries
+                .into_iter()
+                .map(|entry| entry.name)
+                .collect()
+        };
+        assert_eq!(names(""), ["README.md", "lost", "src", "sub"]);
+        assert_eq!(names("sub"), Vec::<String>::new());
+    }
+
+    /// `*` and `**` match the empty name, and the root's own real path is the
+    /// empty name. The root still lists — as empty, because everything in it
+    /// is excluded — rather than answering that it does not exist.
+    #[test]
+    fn a_pattern_that_matches_everything_does_not_exclude_the_root_itself() {
+        let (base, _projection) = projection();
+        for pattern in ["*", "**"] {
+            let projection = FileRoot::open(
+                FileRootConfig::new(base.path().join("root")).with_exclude([pattern.to_owned()]),
+            )
+            .expect("open the root");
+            let listing = projection
+                .list(&RelPath::root(), &Page::default())
+                .expect("a pattern that matches everything must not hide the root");
+            assert!(listing.entries.is_empty(), "`{pattern}`");
+            assert_eq!(listing.next_cursor, None, "`{pattern}`");
+            assert!(
+                matches!(
+                    projection.list(&path("src"), &Page::default()),
+                    Err(FilesError::NotFound)
+                ),
+                "`{pattern}` still excludes everything under the root"
+            );
+        }
+    }
+
+    /// Excluded entries sort first here, and the page is smaller than what is
+    /// left. The pages and their cursors must be exactly those of a directory
+    /// the excluded entries were never in — which only holds if they are
+    /// dropped before the page is chosen. Dropped afterwards, they fill the
+    /// first window and it comes back empty with no cursor.
+    #[test]
+    fn excluded_entries_sorting_first_do_not_shift_pages_or_cursors() {
+        let (base, _projection) = projection();
+        let root = base.path().join("root");
+        fs::remove_file(root.join("README.md")).expect("start from a known directory");
+        fs::remove_dir_all(root.join("src")).expect("start from a known directory");
+        for index in 0..6 {
+            fs::write(root.join(format!("a-hidden-{index}.pem")), "x").expect("a file");
+        }
+        for name in ["v1", "v2", "v3"] {
+            fs::write(root.join(name), "x").expect("a file");
+        }
+        let projection =
+            FileRoot::open(FileRootConfig::new(&root).with_exclude(["*.pem".to_owned()]))
+                .expect("open the root");
+        assert_pages_are_v1_v2_then_v3(&projection);
+    }
+
+    /// The same promise for entries that are excluded only by what they really
+    /// are: links whose own names match nothing.
+    #[cfg(unix)]
+    #[test]
+    fn links_to_excluded_targets_sorting_first_do_not_shift_pages_or_cursors() {
+        let (base, _projection) = projection();
+        let root = base.path().join("root");
+        fs::remove_file(root.join("README.md")).expect("start from a known directory");
+        fs::remove_dir_all(root.join("src")).expect("start from a known directory");
+        fs::create_dir(root.join("zz-secrets")).expect("a directory");
+        for index in 0..6 {
+            std::os::unix::fs::symlink("zz-secrets", root.join(format!("a-alias-{index}")))
+                .expect("link");
+        }
+        for name in ["v1", "v2", "v3"] {
+            fs::write(root.join(name), "x").expect("a file");
+        }
+        let projection =
+            FileRoot::open(FileRootConfig::new(&root).with_exclude(["zz-secrets/**".to_owned()]))
+                .expect("open the root");
+        assert_pages_are_v1_v2_then_v3(&projection);
+    }
+
+    fn assert_pages_are_v1_v2_then_v3(projection: &FileRoot) {
+        let page = |cursor: Option<&str>| {
+            let listing = projection
+                .list(
+                    &RelPath::root(),
+                    &Page {
+                        limit: 2,
+                        cursor: cursor.map(str::to_owned),
+                    },
+                )
+                .expect("a page");
+            let names: Vec<String> = listing
+                .entries
+                .into_iter()
+                .map(|entry| entry.name)
+                .collect();
+            (names, listing.next_cursor)
+        };
+        // The cursor is the ordering key of `v2`, the last name returned:
+        // its bytes on Unix, its UTF-16 code units on Windows.
+        let after_v2 = FileRoot::encode_cursor(&name_bytes(std::ffi::OsStr::new("v2")));
+        assert_eq!(
+            page(None),
+            (
+                vec!["v1".to_owned(), "v2".to_owned()],
+                Some(after_v2.clone())
+            )
+        );
+        assert_eq!(page(Some(&after_v2)), (vec!["v3".to_owned()], None));
+    }
+
     #[test]
     fn an_unsupported_exclude_pattern_is_refused_at_startup() {
         let (base, _projection) = projection();
@@ -1507,6 +1766,133 @@ mod tests {
         assert_eq!(tail.text, "6789");
         assert!(!tail.truncated, "there is nothing after the tail");
         assert_eq!(tail.byte_offset, 6);
+    }
+
+    #[test]
+    fn a_truncated_text_window_ends_at_a_complete_utf8_boundary() {
+        let (base, projection) = projection();
+        let file = base.path().join("root/unicode.txt");
+        // Exercise the default preview cap with every incomplete prefix of a
+        // two-, three-, or four-byte character.
+        for character in ["é", "中", "😀"] {
+            for partial_bytes in 1..character.len() {
+                let prefix = "a".repeat(DEFAULT_MAX_READ_BYTES as usize - partial_bytes);
+                let contents = format!("{prefix}{character}tail");
+                fs::write(&file, &contents).expect("a long UTF-8 file");
+
+                let text = projection
+                    .read_text(&path("unicode.txt"), &ByteWindow::default())
+                    .expect("a truncated preview with complete characters");
+                assert_eq!(text.text, prefix);
+                assert_eq!(text.byte_offset, 0);
+                assert_eq!(text.byte_length, prefix.len() as u64);
+                assert_eq!(text.total_bytes, contents.len() as u64);
+                assert!(text.truncated);
+
+                let bytes = projection
+                    .read_bytes(&path("unicode.txt"), &ByteWindow::default())
+                    .expect("the unchanged byte window");
+                assert_eq!(
+                    bytes.bytes,
+                    contents.as_bytes()[..DEFAULT_MAX_READ_BYTES as usize]
+                );
+                assert_eq!(bytes.byte_offset, 0);
+                assert_eq!(bytes.total_bytes, text.total_bytes);
+                assert!(bytes.truncated);
+
+                // The actual returned length is a valid offset from which to
+                // read the omitted character again without losing its prefix.
+                let next = projection
+                    .read_text(
+                        &path("unicode.txt"),
+                        &ByteWindow {
+                            offset_bytes: text.byte_length,
+                            max_bytes: character.len() as u64,
+                        },
+                    )
+                    .expect("the whole character at its aligned offset");
+                assert_eq!(next.text, character);
+                assert_eq!(next.byte_offset, prefix.len() as u64);
+                assert_eq!(next.byte_length, character.len() as u64);
+                assert!(next.truncated);
+            }
+        }
+    }
+
+    #[test]
+    fn an_incomplete_utf8_tail_at_eof_and_invalid_text_still_fail() {
+        let (base, projection) = projection();
+        let file = base.path().join("root/not-text.txt");
+        for character in ["é", "中", "😀"] {
+            for partial_bytes in 1..character.len() {
+                let mut contents = b"prefix: ".to_vec();
+                contents.extend_from_slice(&character.as_bytes()[..partial_bytes]);
+                fs::write(&file, &contents).expect("an incomplete UTF-8 sequence at EOF");
+                let bytes = projection
+                    .read_bytes(&path("not-text.txt"), &ByteWindow::default())
+                    .expect("the complete byte file");
+                assert!(!bytes.truncated);
+                assert!(matches!(
+                    projection.read_text(&path("not-text.txt"), &ByteWindow::default()),
+                    Err(FilesError::NotText)
+                ));
+            }
+        }
+
+        for (name, contents, max_bytes) in [
+            ("invalid", &b"ok\xfftail"[..], 3),
+            ("nul", &b"ok\0tail"[..], 3),
+            (
+                "invalid before incomplete tail",
+                &b"ok\xff\xf0\x9ftail"[..],
+                5,
+            ),
+            ("overlong", &b"ok\xc0\x80tail"[..], 4),
+            ("surrogate", &b"ok\xed\xa0\x80tail"[..], 5),
+            ("bad continuation", &b"ok\xe2(tail"[..], 4),
+        ] {
+            fs::write(&file, contents).expect("invalid text followed by more bytes");
+            let window = ByteWindow {
+                offset_bytes: 0,
+                max_bytes,
+            };
+            let bytes = projection
+                .read_bytes(&path("not-text.txt"), &window)
+                .expect("a truncated byte window");
+            assert!(bytes.truncated, "{name}");
+            assert!(
+                matches!(
+                    projection.read_text(&path("not-text.txt"), &window),
+                    Err(FilesError::NotText)
+                ),
+                "{name} must not be accepted by trimming an incomplete tail"
+            );
+        }
+    }
+
+    #[test]
+    fn a_text_window_starting_inside_a_utf8_character_is_refused() {
+        let (base, projection) = projection();
+        fs::write(base.path().join("root/unicode.txt"), "é中😀tail").expect("a UTF-8 file");
+        let mut character_offset = 0;
+        for character in ["é", "中", "😀"] {
+            for skipped_bytes in 1..character.len() {
+                let window = ByteWindow {
+                    offset_bytes: (character_offset + skipped_bytes) as u64,
+                    max_bytes: 4,
+                };
+                let bytes = projection
+                    .read_bytes(&path("unicode.txt"), &window)
+                    .expect("the non-aligned byte window remains readable");
+                assert!(bytes.truncated);
+                assert_eq!(bytes.byte_offset, window.offset_bytes);
+                assert!(matches!(
+                    projection.read_text(&path("unicode.txt"), &window),
+                    Err(FilesError::NotText)
+                ));
+            }
+            character_offset += character.len();
+        }
     }
 
     #[test]

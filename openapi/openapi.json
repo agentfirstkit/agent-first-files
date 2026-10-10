@@ -162,6 +162,8 @@
                   "is_a_directory",
                   "not_text",
                   "invalid_path",
+                  "invalid_query",
+                  "invalid_cursor",
                   "permission_denied",
                   "files_io_error",
                   "authentication_required",
@@ -310,6 +312,7 @@
         "additionalProperties": false,
         "properties": {
           "byte_length": {
+            "description": "The returned text length in bytes, excluding an incomplete UTF-8 tail omitted from a truncated window",
             "minimum": 0,
             "type": "integer"
           },
@@ -363,7 +366,7 @@
   "info": {
     "description": "A bearer-protected, read-only projection of one directory tree. Every path is relative to the root this process was started with; nothing outside it is reachable, and a path that is excluded or outside answers exactly as one that does not exist.",
     "title": "Agent-First Files API",
-    "version": "0.1.1"
+    "version": "0.2.0"
   },
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "openapi": "3.2.0",
@@ -538,7 +541,7 @@
                 }
               }
             },
-            "description": "The path is not one this projection accepts"
+            "description": "The query or path is not one this projection accepts"
           },
           "401": {
             "content": {
@@ -549,6 +552,16 @@
               }
             },
             "description": "Missing or invalid bearer credential"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Permission to access this entry was denied"
           },
           "404": {
             "content": {
@@ -569,6 +582,16 @@
               }
             },
             "description": "The path exists and is not a directory"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "The filesystem operation failed"
           }
         },
         "summary": "List one directory",
@@ -620,7 +643,7 @@
                 }
               }
             },
-            "description": "The path is not one this projection accepts"
+            "description": "The query or path is not one this projection accepts"
           },
           "401": {
             "content": {
@@ -632,6 +655,16 @@
             },
             "description": "Missing or invalid bearer credential"
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Permission to access this entry was denied"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -641,6 +674,16 @@
               }
             },
             "description": "No such entry under this root"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "The filesystem operation failed"
           }
         },
         "summary": "Describe one entry",
@@ -693,7 +736,7 @@
                 }
               }
             },
-            "description": "The path is not one this projection accepts"
+            "description": "The query or path is not one this projection accepts"
           },
           "401": {
             "content": {
@@ -704,6 +747,16 @@
               }
             },
             "description": "Missing or invalid bearer credential"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Permission to access this entry was denied"
           },
           "404": {
             "content": {
@@ -724,6 +777,16 @@
               }
             },
             "description": "The path is a directory"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "The filesystem operation failed"
           }
         },
         "summary": "Read a slice of a file as bytes",
@@ -734,7 +797,7 @@
     },
     "/v1/files/text": {
       "get": {
-        "description": "Refuses a file with a NUL or invalid encoding in the slice rather than returning replacement characters: a caller that asked for text and received mojibake has been told something false about the file. A slice that does not reach the end of the file is reported as truncated, which is not an error — reading the tail of a long log is the ordinary case.",
+        "description": "Refuses NUL and invalid UTF-8 rather than returning replacement characters. When a truncated byte window ends inside a UTF-8 character, it omits only the final incomplete sequence, at most three bytes. byte_length counts the returned text bytes. The starting offset is not aligned automatically, and an incomplete sequence at the actual end of a file is still invalid. A slice that does not reach the end of the file is reported as truncated, which is not an error.",
         "operationId": "readTextFile",
         "parameters": [
           {
@@ -782,7 +845,7 @@
                 }
               }
             },
-            "description": "The path is not one this projection accepts"
+            "description": "The query or path is not one this projection accepts"
           },
           "401": {
             "content": {
@@ -793,6 +856,16 @@
               }
             },
             "description": "Missing or invalid bearer credential"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Permission to access this entry was denied"
           },
           "404": {
             "content": {
@@ -813,6 +886,16 @@
               }
             },
             "description": "The path is a directory, or the file is not text"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "The filesystem operation failed"
           }
         },
         "summary": "Read a slice of a file as text",
@@ -860,7 +943,7 @@
                 }
               }
             },
-            "description": "The path is not one this projection accepts"
+            "description": "The query or path is not one this projection accepts"
           },
           "401": {
             "content": {
@@ -872,6 +955,16 @@
             },
             "description": "Missing or invalid bearer credential"
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Permission to access this entry was denied"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -881,6 +974,16 @@
               }
             },
             "description": "No such entry under this root"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "The filesystem operation failed"
           }
         },
         "summary": "Describe the projected root",

@@ -1,6 +1,6 @@
 [package]
 name = "agent-first-files"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 description = "Show a directory on your machine to someone who is not at it — one folder, read-only, and nothing above it."
 license = "MIT"
@@ -13,6 +13,7 @@ include = [
     "docs/**",
     "openapi/**",
     "scripts/test.sh",
+    "build.rs",
     "Cargo.toml",
     "README.md",
     "LICENSE",
@@ -20,7 +21,10 @@ include = [
 ]
 
 [features]
-default = []
+# The release packages are built from the default set, so a plain `cargo
+# install` gets the same CLI they ship. A library consumer that wants only the
+# std core takes `default-features = false`.
+default = ["api"]
 # Filesystem change notification. Its own tier because a consumer that only
 # projects a directory should not acquire a platform watcher backend to do it,
 # and because the guard tier's whole promise is what it does not pull in.
@@ -52,12 +56,12 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 notify = { version = "8", optional = true }
 # yaml/toml/dotenv/ini are what `--access-token-secret file:PATH#DOT_PATH` reads
 # out of; without them the source is advertised and cannot be honored.
-agent-first-data = { version = "0.34.0", default-features = false, features = ["cli", "yaml", "toml", "dotenv", "ini"], optional = true }
+agent-first-data = { version = "0.35.0", default-features = false, features = ["cli", "yaml", "toml", "dotenv", "ini"], optional = true }
 # `session`: the local window is a served AFUI session with a credential of its
 # own, and AFUI owns the browser process, the profile, and the security headers.
 # `page`: the frontend's template is assembled and checked by AFUI's `UiPage`
 # rather than affiles driving MiniJinja itself.
-agent-first-ui = { version = "0.5.0", default-features = false, optional = true }
+agent-first-ui = { version = "0.6.1", default-features = false, optional = true }
 axum = { version = "0.8", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
@@ -68,7 +72,7 @@ tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal
 # WebSocket client here would be a second implementation of the envelope, and
 # the bug it has to catch — a reply the page refuses — is invisible to any
 # client that does not check what the page checks.
-agent-first-ui = { version = "0.5.0", default-features = false, features = ["test-support"] }
+agent-first-ui = { version = "0.6.1", default-features = false, features = ["test-support"] }
 serde_json = "1"
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

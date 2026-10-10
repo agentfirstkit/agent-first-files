@@ -2,7 +2,7 @@
   "$schema": "https://cmn.dev/schemas/v1/spore-core.json",
   "id": "agent-first-files",
   "name": "Agent-First Files",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "domain": "agentfirstkit.com",
   "key": "ed25519.BwbSzqdDYyMN1pPW5snRk3afrJAovHn8aueMvDpfNKVw",
   "synopsis": "Show a directory on your machine to someone who is not at it — one folder, read-only, and nothing above it.",
@@ -16,19 +16,27 @@
   ],
   "license": "MIT",
   "mutations": [
-    "Fix directory watching on Windows: a change inside a subdirectory was attributed to the root, so a caller watching that subdirectory was told nothing at all while a caller watching the root was told about changes that were not in it; the listing key is now rebuilt from the path's components rather than by splitting on a separator only some platforms use",
-    "Run the test suites on Windows on every push, where this spore previously built a Windows binary for every release and exercised it in none of them"
+    "Refuse links to excluded targets by checking the resolved path, not just the name",
+    "Hide unresolvable links and keep the root listable under a match-everything exclude",
+    "Run filesystem work off the async runtime so one slow read cannot stall the rest",
+    "Stop the watcher deadlocking against set_paths and re-register rebuilt directories",
+    "Return truncated text without its cut final character instead of refusing it",
+    "Mark a truncated image preview as incomplete",
+    "Reject bad query parameters with invalid_query without echoing them",
+    "Stop cleanly on SIGTERM and SIGHUP, with handlers registered before readiness",
+    "Report the build in --version and ship the api feature by default",
+    "Upgrade to Agent-First UI 0.6.1 and Agent-First Data 0.35.0"
   ],
   "bonds": [
     {
       "relation": "depends_on",
-      "uri": "cmn://agentfirstkit.com/b3.BmXjdNCjzm7ChFXVQ6FeKzfhuSjt3HvfGRbfCepefMUR",
+      "uri": "cmn://agentfirstkit.com/b3.DfMUqiQWZqqo1YkmzSwxZuG75PLy6dRGMQmuNrSiEidg",
       "id": "agent-first-data",
       "reason": "CLI discovery, output routing, redaction, and protocol events follow Agent-First Data conventions"
     },
     {
       "relation": "depends_on",
-      "uri": "cmn://agentfirstkit.com/b3.Fy21Hs69eXEz8rX3SVkHfyVfZDcmdRMvX4XsJkhJPP9C",
+      "uri": "cmn://agentfirstkit.com/b3.vDbdrHaHNZ5Y2BQmrMpRobduV4D6omqFbX29y7mNwbh",
       "id": "agent-first-ui",
       "reason": "The `api` feature builds the affiles window on Agent-First UI, which owns the browser process, its disposable profile, the UI credential, and the security headers"
     }

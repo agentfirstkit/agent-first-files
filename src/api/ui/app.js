@@ -69,6 +69,7 @@
   let viewRequest = 0;
   /** The AFUI body currently held for an image preview. */
   let viewBlob = null;
+  let pendingViewBlob = null;
   let started = false;
   let watchState = 'unknown';
   let sessionRuntime = null;
@@ -416,7 +417,14 @@
     },
   });
 
+  function releasePendingViewBlob() {
+    if (!pendingViewBlob) return;
+    sessionRuntime.releaseBlob(pendingViewBlob);
+    pendingViewBlob = null;
+  }
+
   function releaseViewBlob() {
+    releasePendingViewBlob();
     if (!viewBlob) return;
     sessionRuntime.releaseBlob(viewBlob);
     viewBlob = null;
@@ -634,7 +642,9 @@
   async function view(entry) {
     const request = ++viewRequest;
     const opening = viewer.hidden;
-    releaseViewBlob();
+    const refreshing = !opening && viewing && viewing.path === entry.path;
+    if (refreshing) releasePendingViewBlob();
+    else releaseViewBlob();
     // Before the address is written, so the entry underneath keeps the tree as
     // the person left it. Every call names the file, which is what a frame's
     // own head shows while this page is inside one.
@@ -651,7 +661,7 @@
     // The path, because in a tree a name alone does not say which of four
     // `mod.rs` a person is looking at.
     viewerMeta.textContent = entry.path;
-    const loading = viewerState('Loading…', 'loading');
+    const loading = refreshing ? null : viewerState('Loading…', 'loading');
 
     if (isImage(entry.name)) {
       let body;
@@ -667,7 +677,12 @@
         sessionRuntime.releaseBlob(body.blob);
         return;
       }
-      viewBlob = body.blob;
+      pendingViewBlob = body.blob;
+      // A partial image may still decode. Keep that limit visible even if it
+      // does, rather than letting a successful load imply a complete preview.
+      viewerMeta.textContent = body.truncated
+        ? `${entry.path} · ${sizeOf(entry)} · preview incomplete`
+        : `${entry.path} · ${sizeOf(entry)}`;
       const image = document.createElement('img');
       image.className = 'preview';
       image.alt = entry.name;
@@ -675,20 +690,28 @@
       image.hidden = true;
       image.addEventListener('load', () => {
         if (request !== viewRequest) return;
-        loading.remove();
+        pendingViewBlob = null;
+        releaseViewBlob();
+        viewBlob = body.blob;
+        if (loading) loading.remove();
         image.hidden = false;
+        viewerBody.replaceChildren(image);
       }, {once: true});
       image.addEventListener('error', () => {
         if (request !== viewRequest) return;
         releaseViewBlob();
         image.remove();
-        viewerState('This image could not be loaded.', 'error');
+        viewerState(
+          body.truncated
+            ? 'This image preview is incomplete and could not be decoded.'
+            : 'This image could not be loaded.',
+          'error',
+        );
       }, {once: true});
       // AFUI validates the opaque reference, serves it on this session's
       // origin, and applies the Provider's media allowlist plus `nosniff`.
       image.src = sessionRuntime.blobUrl(body.blob);
       viewerBody.append(image);
-      viewerMeta.textContent = `${entry.path} · ${sizeOf(entry)}`;
       return;
     }
 
@@ -763,7 +786,7 @@
       viewing &&
       (fullResync || changed.some(directory => atOrUnder(parentOf(viewing.path), directory)))
     ) {
-      view(viewing);
+      return view(viewing);
     }
   }
 

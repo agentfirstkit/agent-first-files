@@ -6,6 +6,7 @@ use std::time::Instant;
 
 use axum::Json;
 use axum::body::Body;
+use axum::extract::rejection::QueryRejection;
 use axum::extract::{DefaultBodyLimit, Query, State};
 use axum::http::header::{AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE, WWW_AUTHENTICATE};
 use axum::http::{HeaderName, HeaderValue, Request, StatusCode};
@@ -305,8 +306,43 @@ async fn get_root(State(state): State<ApiState>) -> Response {
     result_response(Instant::now(), &RootResult::from(state.root.info()))
 }
 
-async fn list_directory(State(state): State<ApiState>, query: Query<ListQuery>) -> Response {
+fn checked_query<T>(
+    started: Instant,
+    query: Result<Query<T>, QueryRejection>,
+) -> Result<T, Box<Response>> {
+    query.map(|Query(query)| query).map_err(|_rejection| {
+        Box::new(api_error(
+            started,
+            StatusCode::BAD_REQUEST,
+            "invalid_query",
+            "query parameters do not match this route",
+        ))
+    })
+}
+
+/// Keep the synchronous projection off the worker serving HTTP and UI traffic.
+/// Join failures have a stable caller-safe mapping, without a panic payload.
+async fn file_io<T: Send + 'static>(
+    operation: impl FnOnce() -> Result<T, FilesError> + Send + 'static,
+) -> Result<T, FilesError> {
+    tokio::task::spawn_blocking(operation)
+        .await
+        .unwrap_or_else(|_failure| {
+            Err(FilesError::Io(std::io::Error::other(
+                "file I/O task failed",
+            )))
+        })
+}
+
+async fn list_directory(
+    State(state): State<ApiState>,
+    query: Result<Query<ListQuery>, QueryRejection>,
+) -> Response {
     let started = Instant::now();
+    let query = match checked_query(started, query) {
+        Ok(query) => query,
+        Err(response) => return *response,
+    };
     let path = match RelPath::parse(&query.path) {
         Ok(path) => path,
         Err(error) => return files_error(started, error),
@@ -318,32 +354,49 @@ async fn list_directory(State(state): State<ApiState>, query: Query<ListQuery>) 
             .min(MAX_PAGE_LIMIT),
         cursor: query.cursor.clone(),
     };
-    match state.root.list(&path, &page) {
+    let root = Arc::clone(&state.root);
+    match file_io(move || root.list(&path, &page)).await {
         Ok(listing) => result_response(started, &DirectoryResult::from(listing)),
         Err(error) => files_error(started, error),
     }
 }
 
-async fn get_entry(State(state): State<ApiState>, query: Query<PathQuery>) -> Response {
+async fn get_entry(
+    State(state): State<ApiState>,
+    query: Result<Query<PathQuery>, QueryRejection>,
+) -> Response {
     let started = Instant::now();
+    let query = match checked_query(started, query) {
+        Ok(query) => query,
+        Err(response) => return *response,
+    };
     let path = match RelPath::parse(&query.path) {
         Ok(path) => path,
         Err(error) => return files_error(started, error),
     };
-    match state.root.entry(&path) {
+    let root = Arc::clone(&state.root);
+    match file_io(move || root.entry(&path)).await {
         Ok(entry) => result_response(started, &EntryResult::from(entry)),
         Err(error) => files_error(started, error),
     }
 }
 
-async fn read_text_file(State(state): State<ApiState>, query: Query<ReadQuery>) -> Response {
+async fn read_text_file(
+    State(state): State<ApiState>,
+    query: Result<Query<ReadQuery>, QueryRejection>,
+) -> Response {
     let started = Instant::now();
+    let query = match checked_query(started, query) {
+        Ok(query) => query,
+        Err(response) => return *response,
+    };
     let path = match RelPath::parse(&query.path) {
         Ok(path) => path,
         Err(error) => return files_error(started, error),
     };
     let window = window_of(&state, &query);
-    match state.root.read_text(&path, &window) {
+    let root = Arc::clone(&state.root);
+    match file_io(move || root.read_text(&path, &window)).await {
         Ok(read) => result_response(started, &TextFileResult::new(query.path.clone(), read)),
         Err(error) => files_error(started, error),
     }
@@ -356,14 +409,22 @@ async fn read_text_file(State(state): State<ApiState>, query: Query<ReadQuery>) 
 /// well — but it goes out as itself, with a conservative media type taken from
 /// the extension, `nosniff`, and an attachment disposition, so nothing here
 /// decides that a person's file is something a browser should run.
-async fn read_file_bytes(State(state): State<ApiState>, query: Query<ReadQuery>) -> Response {
+async fn read_file_bytes(
+    State(state): State<ApiState>,
+    query: Result<Query<ReadQuery>, QueryRejection>,
+) -> Response {
     let started = Instant::now();
+    let query = match checked_query(started, query) {
+        Ok(query) => query,
+        Err(response) => return *response,
+    };
     let path = match RelPath::parse(&query.path) {
         Ok(path) => path,
         Err(error) => return files_error(started, error),
     };
     let window = window_of(&state, &query);
-    match state.root.read_bytes(&path, &window) {
+    let root = Arc::clone(&state.root);
+    match file_io(move || root.read_bytes(&path, &window)).await {
         Ok(read) => {
             let mut response = (StatusCode::OK, read.bytes).into_response();
             let headers = response.headers_mut();
@@ -567,14 +628,16 @@ async fn method_not_allowed() -> Response {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::sync::{Arc, Condvar, Mutex};
+    use std::time::Duration;
 
     use axum::body::{Body, to_bytes};
     use axum::http::{Request, StatusCode, header::AUTHORIZATION};
     use serde_json::Value;
     use tower::ServiceExt;
 
-    use super::{ApiState, router};
-    use crate::{FileRoot, FileRootConfig};
+    use super::{ApiState, file_io, files_error, router};
+    use crate::{ByteWindow, FileRoot, FileRootConfig, RelPath};
 
     const TOKEN: &str = "test-token-0123456789-abcdefghijkl";
 
@@ -694,8 +757,139 @@ mod tests {
     async fn an_unknown_query_parameter_is_refused_rather_than_ignored() {
         let workspace = workspace();
         let (app, _base) = app(workspace.path());
-        let (status, _body) = call(&app, "/v1/directories?path=&depth=9", Some(TOKEN)).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
+        for uri in [
+            "/v1/directories?path=&depth=9",
+            "/v1/entries?path=README.md&unknown_secret=QueryValueCanary",
+            "/v1/files/text?path=README.md&unknown_secret=QueryValueCanary",
+            "/v1/files/bytes?path=README.md&unknown_secret=QueryValueCanary",
+        ] {
+            let (status, body) = call(&app, uri, Some(TOKEN)).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}");
+            assert_eq!(body["kind"], "error", "{body}");
+            assert_eq!(body["error"]["code"], "invalid_query", "{body}");
+            assert_eq!(body["error"]["retryable"], false, "{body}");
+            assert!(body["trace"]["duration_ms"].is_u64(), "{body}");
+            assert!(!body.to_string().contains("QueryValueCanary"));
+        }
+    }
+
+    #[tokio::test]
+    async fn malformed_numeric_queries_use_the_safe_error_envelope() {
+        let workspace = workspace();
+        let (app, _base) = app(workspace.path());
+        for uri in [
+            "/v1/directories?path=&limit=abc",
+            "/v1/directories?path=&limit=-1",
+            "/v1/files/text?path=README.md&offset_bytes=QueryValueCanary",
+            "/v1/files/bytes?path=README.md&max_bytes=QueryValueCanary",
+        ] {
+            let (status, body) = call(&app, uri, Some(TOKEN)).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}");
+            assert_eq!(body["kind"], "error", "{body}");
+            assert_eq!(body["error"]["code"], "invalid_query", "{body}");
+            assert_eq!(
+                body["error"]["message"],
+                "query parameters do not match this route"
+            );
+            assert_eq!(body["error"]["retryable"], false, "{body}");
+            assert!(body["trace"]["duration_ms"].is_u64(), "{body}");
+            assert!(!body.to_string().contains("QueryValueCanary"));
+        }
+        let (status, body) = call(&app, "/v1/directories?limit=abc", None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"]["code"], "authentication_required");
+    }
+
+    struct ReleaseOnDrop(Arc<(Mutex<bool>, Condvar)>);
+
+    impl Drop for ReleaseOnDrop {
+        fn drop(&mut self) {
+            let (released, wake) = self.0.as_ref();
+            *released.lock().unwrap_or_else(|error| error.into_inner()) = true;
+            wake.notify_all();
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_slow_file_job_leaves_health_and_small_reads_responsive() {
+        let workspace = workspace();
+        let projection =
+            Arc::new(FileRoot::open(FileRootConfig::new(workspace.path())).expect("root"));
+        let (app, _base) = app(workspace.path());
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let release = ReleaseOnDrop(Arc::clone(&gate));
+        let blocked = Arc::clone(&gate);
+        let (started, waiting) = tokio::sync::oneshot::channel();
+        let slow = tokio::spawn(file_io(move || {
+            let _ignored = started.send(());
+            let (released, wake) = blocked.as_ref();
+            // A broken scheduling boundary must fail, never hang the runtime
+            // forever. The RAII guard normally releases well before this cap,
+            // which stays well above the response budgets below so a blocked
+            // runtime cannot pass them by waiting the cap out.
+            let (_released, _timeout) = wake
+                .wait_timeout_while(
+                    released.lock().expect("gate"),
+                    Duration::from_secs(10),
+                    |released| !*released,
+                )
+                .expect("wait for release");
+            projection.read_text(
+                &RelPath::parse("README.md").expect("path"),
+                &ByteWindow {
+                    offset_bytes: 0,
+                    max_bytes: 1024,
+                },
+            )
+        }));
+        tokio::time::timeout(Duration::from_secs(1), waiting)
+            .await
+            .expect("blocking job started")
+            .expect("start signal");
+        assert!(!slow.is_finished(), "the slow job must still be blocked");
+
+        // The budget is generous because what it separates is "answered
+        // while the slow job is held" from "answered only after the cap":
+        // a first file open on Windows (antivirus scan, an emulated VM) can
+        // take hundreds of milliseconds without anything being blocked.
+        let budget = Duration::from_secs(2);
+        let (status, _) = tokio::time::timeout(budget, call(&app, "/health", None))
+            .await
+            .expect("health remains responsive on one async worker");
+        assert_eq!(status, StatusCode::OK);
+        let (status, body) = tokio::time::timeout(
+            budget,
+            call(&app, "/v1/files/text?path=README.md", Some(TOKEN)),
+        )
+        .await
+        .expect("another file read remains responsive on one async worker");
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["result"]["text"], "# hello\n");
+        assert!(
+            !slow.is_finished(),
+            "responses arrived before releasing the slow read"
+        );
+
+        drop(release);
+        let read = slow.await.expect("join slow job").expect("real file read");
+        assert_eq!(read.text, "# hello\n");
+    }
+
+    #[tokio::test]
+    async fn a_failed_file_worker_uses_a_caller_safe_error() {
+        let started = std::time::Instant::now();
+        let error = file_io::<()>(|| panic!("FileWorkerPanicCanary"))
+            .await
+            .expect_err("worker failed");
+        let response = files_error(started, error);
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("error body");
+        let body: Value = serde_json::from_slice(&bytes).expect("envelope");
+        assert_eq!(body["error"]["code"], "files_io_error");
+        assert_eq!(body["error"]["retryable"], false);
+        assert!(!String::from_utf8_lossy(&bytes).contains("FileWorkerPanicCanary"));
     }
 
     #[tokio::test]

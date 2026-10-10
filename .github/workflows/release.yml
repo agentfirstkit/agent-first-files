@@ -61,18 +61,8 @@ jobs:
             target
           key: ${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}
 
-      # `--features api` is not optional here: the affiles target declares
-      # `required-features = ["api"]`, so the library keeps its bare PTY
-      # dependency tree while the CLI keeps its HTTP server, and this build has
-      # to ask for the feature to get a binary at all.
-      #
-      # Naming `--bin affiles` is what makes that a hard failure rather than
-      # a quiet one. Without the feature, `cargo build --release` alone would
-      # succeed while producing no executable, and the packaging step below
-      # would be the first thing to notice; asking for the target by name makes
-      # Cargo refuse up front and say which feature is missing.
       - name: Build
-        run: cargo build --release --features api --bin affiles --target ${{ matrix.target }}
+        run: cargo build --release --bin affiles --target ${{ matrix.target }}
 
       - name: Package
         shell: bash

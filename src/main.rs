@@ -122,96 +122,100 @@ const UI_DELIVERY: agent_first_ui::cli::UiDeliveryOffer =
     agent_first_ui::cli::UiDeliveryOffer::WithLink;
 
 fn cli_spec() -> Result<BuiltCliSpec, CliSpecError> {
-    build_afdata_cli(
-        CliSpec::new("affiles", env!("CARGO_PKG_VERSION"))
-            .about("Project one directory tree, read-only, to a person who is not at this machine.")
-            .display_name("Agent-First Files")
-            .lifecycle_output(finite_output())
-            .command(CommandSpec::root())
-            .command(
-                CommandSpec::new(["api"])
-                    .about("Serve or export the OpenAPI 3.2 file projection contract."),
-            )
-            .command(
-                projection_args(
-                    CommandSpec::new(["api", "serve"])
-                        .about("Serve the bearer-protected projection API.")
-                        .arg(
-                            ArgSpec::option_i64("--port", "PORT")
-                                .default_i64(9422)
-                                .about("TCP port; use 0 to let the operating system choose"),
-                        )
-                        .arg(
-                            ArgSpec::option_enum("--mode", ["local", "lan"])
-                                .value_name("MODE")
-                                .default("local")
-                                .about(
-                                    "Network exposure: local binds 127.0.0.1; lan binds 0.0.0.0 and publishes the LAN address",
-                                ),
-                        )
-                        .arg(access_token_arg()),
-                )
-                .combination(
-                    Combination::new("api-serve")
-                        .action("api_serve")
-                        .required(["root"])
-                        .optional([
-                            "port",
-                            "mode",
-                            "access_token_secret",
-                            "exclude",
-                            "max_read_bytes",
-                            "no_symlinks",
-                        ])
-                        .output(stream_output()),
-                ),
-            )
-            .command(
-                CommandSpec::new(["api", "export"])
-                    .about("Write the generated OpenAPI document.")
+    let mut spec = CliSpec::new("affiles", env!("CARGO_PKG_VERSION"))
+        .about("Project one directory tree, read-only, to a person who is not at this machine.")
+        .display_name(env!("DISPLAY_NAME"))
+        .lifecycle_output(finite_output())
+        .command(CommandSpec::root())
+        .command(
+            CommandSpec::new(["api"])
+                .about("Serve or export the OpenAPI 3.2 file projection contract."),
+        )
+        .command(
+            projection_args(
+                CommandSpec::new(["api", "serve"])
+                    .about("Serve the bearer-protected projection API.")
                     .arg(
-                        ArgSpec::option("--directory", "PATH")
-                            .default("openapi")
-                            .about("Destination directory"),
+                        ArgSpec::option_i64("--port", "PORT")
+                            .default_i64(9422)
+                            .about("TCP port; use 0 to let the operating system choose"),
                     )
-                    .arg(ArgSpec::flag("--force").about("Replace an existing generated document"))
-                    .combination(
-                        Combination::new("api-export")
-                            .action("api_export")
-                            .optional(["directory", "force"])
-                            .output(finite_output()),
-                    ),
+                    .arg(
+                        ArgSpec::option_enum("--mode", ["local", "lan"])
+                            .value_name("MODE")
+                            .default("local")
+                            .about(
+                                "Network exposure: local binds 127.0.0.1; lan binds 0.0.0.0 and publishes the LAN address",
+                            ),
+                    )
+                    .arg(access_token_arg()),
             )
-            .command(
-                projection_args(
-                    CommandSpec::new(["ui"])
-                        .about("Open, directly link, or publish one directory tree."),
+            .combination(
+                Combination::new("api-serve")
+                    .action("api_serve")
+                    .required(["root"])
+                    .optional([
+                        "port",
+                        "mode",
+                        "access_token_secret",
+                        "exclude",
+                        "max_read_bytes",
+                        "no_symlinks",
+                    ])
+                    .output(stream_output()),
+            ),
+        )
+        .command(
+            CommandSpec::new(["api", "export"])
+                .about("Write the generated OpenAPI document.")
+                .arg(
+                    ArgSpec::option("--directory", "PATH")
+                        .default("openapi")
+                        .about("Destination directory"),
                 )
-                .arg(ui_mode_arg())
+                .arg(ArgSpec::flag("--force").about("Replace an existing generated document"))
                 .combination(
-                    Combination::new("ui")
-                        .action("ui")
-                        .required(["root"])
-                        .optional([
-                            "exclude",
-                            "max_read_bytes",
-                            "no_symlinks",
-                            "mode",
-                        ])
-                        .output(stream_output()),
+                    Combination::new("api-export")
+                        .action("api_export")
+                        .optional(["directory", "force"])
+                        .output(finite_output()),
                 ),
+        )
+        .command(
+            projection_args(
+                CommandSpec::new(["ui"])
+                    .about("Open, directly link, or publish one directory tree."),
             )
-            .command(
-                CommandSpec::new(["skill"]).about("Manage the Agent-First Files agent skill."),
-            )
-            .command(skill_command(
-                "status",
-                "Report the installed skill state.",
-                false,
-            ))
-            .command(skill_command("install", "Install the skill.", true))
-            .command(skill_command("uninstall", "Remove the skill.", true)),
-    )
+            .arg(ui_mode_arg())
+            .combination(
+                Combination::new("ui")
+                    .action("ui")
+                    .required(["root"])
+                    .optional([
+                        "exclude",
+                        "max_read_bytes",
+                        "no_symlinks",
+                        "mode",
+                    ])
+                    .output(stream_output()),
+            ),
+        )
+        .command(
+            CommandSpec::new(["skill"]).about("Manage the Agent-First Files agent skill."),
+        )
+        .command(skill_command(
+            "status",
+            "Report the installed skill state.",
+            false,
+        ))
+        .command(skill_command("install", "Install the skill.", true))
+        .command(skill_command("uninstall", "Remove the skill.", true));
+    // Absent from a source tarball with no reachable .git, and the version
+    // payload omits it rather than reporting the literal "unknown".
+    if let Some(build) = Some(env!("GIT_SHA")).filter(|sha| *sha != "unknown") {
+        spec = spec.build_id(build);
+    }
+    build_afdata_cli(spec)
 }
 
 fn main() -> ExitCode {
@@ -590,6 +594,7 @@ fn run_api_serve(invocation: &ResolvedInvocation) -> ExitCode {
             .map_err(|error| ServeError::Runtime(format!("read API address: {error}")))?;
         let api_url = format!("http://{advertised_ip}:{}", address.port());
         let info = root.info();
+        let shutdown = shutdown_signal();
         emitter
             .emit(
                 json_progress(json!({
@@ -608,7 +613,7 @@ fn run_api_serve(invocation: &ResolvedInvocation) -> ExitCode {
             )
             .map_err(|_| ServeError::Output)?;
         axum::serve(listener, api::router(ApiState::new(root, token)))
-            .with_graceful_shutdown(shutdown_signal())
+            .with_graceful_shutdown(shutdown)
             .await
             .map_err(|error| ServeError::Runtime(format!("serve affiles API: {error}")))?;
         Ok::<String, ServeError>(api_url)
@@ -715,6 +720,7 @@ fn run_ui(invocation: &ResolvedInvocation) -> ExitCode {
         // asked for it, so AFUI reveals that one field by name. Everything
         // else — affiles' own fields included — goes through the ordinary
         // redacting emit below.
+        let shutdown = shutdown_signal();
         emitter
             .emit(
                 json_progress(agent_first_ui::cli::ready_event_revealing_link(
@@ -734,17 +740,19 @@ fn run_ui(invocation: &ResolvedInvocation) -> ExitCode {
                 .build(),
             )
             .map_err(|_| ServeError::Output)?;
-        let outcome = active
-            .wait()
-            .await
-            .map_err(|error| ServeError::Runtime(error.to_string()))?;
+        let ending = tokio::select! {
+            outcome = active.wait() => outcome
+                .map_err(|error| ServeError::Runtime(error.to_string()))?
+                .ending(),
+            () = shutdown => "interrupted",
+        };
         let _runtime_stopped = ui_runtime_task.await;
-        Ok(outcome)
+        Ok(ending)
     });
     match outcome {
-        Ok(outcome) => ExitCode::from(emitter.finish_result(json!({
+        Ok(ending) => ExitCode::from(emitter.finish_result(json!({
             "stopped": true,
-            "ending": outcome.ending(),
+            "ending": ending,
         }))),
         Err(ServeError::Runtime(message)) => finish_error(&mut emitter, "ui_failed", &message, 1),
         Err(ServeError::Output) => ExitCode::from(4),
@@ -770,8 +778,54 @@ enum ServeError {
     Output,
 }
 
-async fn shutdown_signal() {
-    let _result = tokio::signal::ctrl_c().await;
+/// A future that completes when the process is asked to stop.
+///
+/// The handlers are installed by the call, not by the first poll of what it
+/// returns. A supervisor reads the ready line and may signal at once; a handler
+/// installed only when the serve loop first polls is not there yet, the signal
+/// takes its default disposition, and the process dies without its terminal
+/// event. So this is called before the ready event is written, and must be
+/// called inside the runtime.
+fn shutdown_signal() -> impl std::future::Future<Output = ()> + Send + 'static {
+    #[cfg(unix)]
+    let (mut interrupt, mut terminate) = {
+        use tokio::signal::unix::{SignalKind, signal};
+        (
+            signal(SignalKind::interrupt()).ok(),
+            signal(SignalKind::terminate()).ok(),
+        )
+    };
+    async move {
+        #[cfg(unix)]
+        {
+            // A signal whose handler could not be installed is one this
+            // process cannot hear, not one that has arrived.
+            let interrupted = async {
+                match interrupt.as_mut() {
+                    Some(signal) => {
+                        signal.recv().await;
+                    }
+                    None => std::future::pending().await,
+                }
+            };
+            let terminated = async {
+                match terminate.as_mut() {
+                    Some(signal) => {
+                        signal.recv().await;
+                    }
+                    None => std::future::pending().await,
+                }
+            };
+            tokio::select! {
+                () = interrupted => {},
+                () = terminated => {},
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _result = tokio::signal::ctrl_c().await;
+        }
+    }
 }
 
 fn invalid_value(message: &str, format: OutputFormat, output_to: OutputTo) -> ExitCode {

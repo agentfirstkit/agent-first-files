@@ -81,7 +81,7 @@ jobs:
           key: ${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
 
       - name: Build what the release builds
-        run: cargo build --release --features api --bin affiles
+        run: cargo build --release --bin affiles
 
       - name: Unit suites
-        run: cargo test --features api --lib --bins
+        run: cargo test --lib --bins

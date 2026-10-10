@@ -315,7 +315,7 @@ fn paths() -> Value {
             "get": {
                 "operationId": "readTextFile",
                 "summary": "Read a slice of a file as text",
-                "description": "Refuses a file with a NUL or invalid encoding in the slice rather than returning replacement characters: a caller that asked for text and received mojibake has been told something false about the file. A slice that does not reach the end of the file is reported as truncated, which is not an error — reading the tail of a long log is the ordinary case.",
+                "description": "Refuses NUL and invalid UTF-8 rather than returning replacement characters. When a truncated byte window ends inside a UTF-8 character, it omits only the final incomplete sequence, at most three bytes. byte_length counts the returned text bytes. The starting offset is not aligned automatically, and an incomplete sequence at the actual end of a file is still invalid. A slice that does not reach the end of the file is reported as truncated, which is not an error.",
                 "tags": ["files"],
                 "parameters": [
                     {"$ref": "#/components/parameters/EntryPath"},
@@ -354,8 +354,10 @@ fn paths() -> Value {
                             }
                         }
                     },
-                    "400": error_response("The path is not one this projection accepts"),
+                    "400": error_response("The query or path is not one this projection accepts"),
                     "401": error_response("Missing or invalid bearer credential"),
+                    "403": error_response("Permission to access this entry was denied"),
+                    "500": error_response("The filesystem operation failed"),
                     "404": error_response("No such entry under this root"),
                     "409": error_response("The path is a directory")
                 }
@@ -381,11 +383,19 @@ fn with_auth(mut responses: Value) -> Value {
     if let Some(object) = responses.as_object_mut() {
         object.insert(
             "400".to_string(),
-            error_response("The path is not one this projection accepts"),
+            error_response("The query or path is not one this projection accepts"),
         );
         object.insert(
             "401".to_string(),
             error_response("Missing or invalid bearer credential"),
+        );
+        object.insert(
+            "403".to_string(),
+            error_response("Permission to access this entry was denied"),
+        );
+        object.insert(
+            "500".to_string(),
+            error_response("The filesystem operation failed"),
         );
         object.insert(
             "404".to_string(),
@@ -466,6 +476,8 @@ fn schemas() -> Value {
                                 "is_a_directory",
                                 "not_text",
                                 "invalid_path",
+                                "invalid_query",
+                                "invalid_cursor",
                                 "permission_denied",
                                 "files_io_error",
                                 "authentication_required",
@@ -557,7 +569,11 @@ fn schemas() -> Value {
                 "path": {"type": "string"},
                 "text": {"type": "string"},
                 "byte_offset": {"type": "integer", "minimum": 0},
-                "byte_length": {"type": "integer", "minimum": 0},
+                "byte_length": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "The returned text length in bytes, excluding an incomplete UTF-8 tail omitted from a truncated window"
+                },
                 "total_bytes": {"type": "integer", "minimum": 0},
                 "truncated": {"type": "boolean"}
             }
@@ -593,6 +609,24 @@ fn entry_schema() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn all_file_operations_declare_permission_and_io_failures() {
+        let document = openapi_document();
+        for path in [
+            "/v1/root",
+            "/v1/directories",
+            "/v1/entries",
+            "/v1/files/text",
+            "/v1/files/bytes",
+        ] {
+            let responses = &document["paths"][path]["get"]["responses"];
+            for status in ["403", "500"] {
+                assert!(responses[status].is_object(), "{path} lacks {status}");
+                assert!(responses[status]["content"]["application/json"]["schema"].is_object());
+            }
+        }
+    }
 
     #[test]
     fn every_operation_has_a_unique_id_and_a_typed_success() {

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use agent_first_ui::{UiBlobRef, UiCall, UiCallError, UiSessionRuntime};
 use serde::{Deserialize, Serialize};
 
@@ -97,6 +99,17 @@ pub(super) enum FilesUiState {
 }
 
 pub(super) type FilesRuntime = UiSessionRuntime<FilesUiAction, FilesUiReply, FilesUiState>;
+type FilesCall = UiCall<FilesUiAction, FilesUiReply>;
+type ActionResult = Result<FilesUiReply, UiCallError>;
+
+struct PendingCall {
+    call: Arc<FilesCall>,
+    task: tokio::task::JoinHandle<ActionResult>,
+}
+
+fn spawn_action(state: ApiState, call: Arc<FilesCall>) -> tokio::task::JoinHandle<ActionResult> {
+    tokio::task::spawn_blocking(move || execute_action(&state, &call))
+}
 
 pub(super) fn publish_opening_state(
     state: &ApiState,
@@ -106,16 +119,46 @@ pub(super) fn publish_opening_state(
 }
 
 pub(super) async fn run(state: ApiState, runtime: FilesRuntime) {
+    run_with_runner(state, runtime, spawn_action).await;
+}
+
+/// One action remains in flight while filesystem notifications keep advancing.
+/// The private runner lets tests delay actual I/O without changing FileRoot.
+async fn run_with_runner(
+    state: ApiState,
+    runtime: FilesRuntime,
+    start_action: impl Fn(ApiState, Arc<FilesCall>) -> tokio::task::JoinHandle<ActionResult> + Send,
+) {
     let mut changes = state.changes().map(|changes| changes.sender.subscribe());
+    let mut pending = None;
 
     loop {
+        let action_pending = pending.is_some();
         tokio::select! {
-            call = runtime.recv() => {
+            call = runtime.recv(), if !action_pending => {
                 let call = match call {
                     Ok(Some(call)) => call,
                     Ok(None) | Err(_) => return,
                 };
-                match execute_action(&state, &call) {
+                let call = Arc::new(call);
+                let task = start_action(state.clone(), Arc::clone(&call));
+                pending = Some(PendingCall { call, task });
+            }
+            completed = receive_completion(&mut pending), if action_pending => {
+                let Some(PendingCall { call, .. }) = pending.take() else {
+                    return;
+                };
+                let call = match Arc::try_unwrap(call) {
+                    Ok(call) => call,
+                    // A runner retaining the completed call cannot safely
+                    // answer it twice. End this handler without panic details.
+                    Err(_still_shared) => return,
+                };
+                let result = completed.unwrap_or_else(|_failure| Err(UiCallError::new(
+                    "files_io_error",
+                    "The filesystem could not answer this UI action.",
+                ).retryable(true)));
+                match result {
                     Ok(reply) => {
                         if call.finish(&reply).await.is_err() {
                             return;
@@ -155,6 +198,15 @@ pub(super) async fn run(state: ApiState, runtime: FilesRuntime) {
                 }
             }
         }
+    }
+}
+
+async fn receive_completion(
+    pending: &mut Option<PendingCall>,
+) -> Result<ActionResult, tokio::task::JoinError> {
+    match pending.as_mut() {
+        Some(pending) => (&mut pending.task).await,
+        None => std::future::pending().await,
     }
 }
 
@@ -349,8 +401,16 @@ fn blob_call_error(_error: agent_first_ui::Error) -> UiCallError {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::sync::{Arc, Condvar, Mutex};
+    use std::time::Duration;
 
-    use super::{FilesUiAction, FilesUiReply, browse, set_watch};
+    use agent_first_ui::test_support::RuntimeClient;
+    use agent_first_ui::{UiExpiry, UiSession, UiUrlDelivery};
+    use serde_json::{Value, json};
+
+    use super::{
+        FilesUiAction, FilesUiReply, browse, publish_opening_state, run_with_runner, set_watch,
+    };
     use crate::api::ApiState;
     use crate::{FileRoot, FileRootConfig};
 
@@ -412,5 +472,183 @@ mod tests {
         let state = state(base.path());
         let error = set_watch(&state, &[String::new()]).expect_err("watch unavailable");
         assert_eq!(error.code(), "watch_unavailable");
+    }
+
+    struct ReadGate {
+        started: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+        released: Mutex<bool>,
+        wake: Condvar,
+    }
+
+    impl ReadGate {
+        fn wait(&self) {
+            if let Some(started) = self.started.lock().expect("start signal").take() {
+                let _ignored = started.send(());
+            }
+            let (_released, _timeout) = self
+                .wake
+                .wait_timeout_while(
+                    self.released.lock().expect("read gate"),
+                    Duration::from_secs(5),
+                    |released| !*released,
+                )
+                .expect("wait for release");
+        }
+    }
+
+    struct ReleaseRead(Arc<ReadGate>);
+
+    impl Drop for ReleaseRead {
+        fn drop(&mut self) {
+            *self
+                .0
+                .released
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()) = true;
+            self.0.wake.notify_all();
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_pending_read_keeps_publishing_real_watch_changes() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        fs::write(workspace.path().join("README.md"), "read after release\n").expect("file");
+        let root = FileRoot::open(FileRootConfig::new(workspace.path())).expect("root");
+        let state = ApiState::watching(root, TOKEN.to_owned());
+        assert!(state.changes().is_some(), "a real watcher is required");
+        let session = UiSession::<()>::new("inspector", "files_view").expect("session");
+        let (session, runtime) = super::super::attach_runtime(session, &state).expect("runtime");
+        publish_opening_state(&state, &runtime.0).expect("opening state");
+        let (started, waiting) = tokio::sync::oneshot::channel();
+        let gate = Arc::new(ReadGate {
+            started: Mutex::new(Some(started)),
+            released: Mutex::new(false),
+            wake: Condvar::new(),
+        });
+        let release = ReleaseRead(Arc::clone(&gate));
+        let served = tokio::spawn(run_with_runner(state, runtime.0, move |state, call| {
+            let gate = Arc::clone(&gate);
+            tokio::task::spawn_blocking(move || {
+                if matches!(call.action(), FilesUiAction::ReadText { .. }) {
+                    gate.wait();
+                }
+                super::execute_action(&state, &call)
+            })
+        }));
+        let active = session
+            .serve(axum::Router::new(), UiUrlDelivery::new(UiExpiry::Never))
+            .await
+            .expect("serve");
+        let mut page = RuntimeClient::connect(active.access_url(), "slow-reader")
+            .await
+            .expect("page");
+        let _opening: Option<Value> = page.opening_state().await.expect("opening state");
+        let _watched: Value = page
+            .call(&json!({"type": "set_watch", "paths": [""]}))
+            .await
+            .expect("watch root");
+        let slow = tokio::spawn(async move {
+            page.call::<_, Value>(
+                &json!({"type": "read_text", "path": "README.md", "offset_bytes": 0}),
+            )
+            .await
+        });
+        tokio::time::timeout(Duration::from_secs(1), waiting)
+            .await
+            .expect("slow read started")
+            .expect("start signal");
+        assert!(!slow.is_finished(), "the file read is still gated");
+
+        fs::write(
+            workspace.path().join("changed.txt"),
+            "a real watcher event\n",
+        )
+        .expect("change");
+        // RuntimeClient consumes state frames while waiting for a call. A
+        // second real client observes the retained update without a second
+        // private transport or a public test API.
+        let observe = async {
+            loop {
+                let mut observer = RuntimeClient::connect(active.access_url(), "watch-observer")
+                    .await
+                    .expect("observer");
+                let state: Option<Value> = observer.opening_state().await.expect("retained state");
+                observer.close().await.expect("close observer");
+                if state.is_some_and(|state| {
+                    state["type"] == "watching"
+                        && state["resync_required"] == false
+                        && state["changed_paths"]
+                            .as_array()
+                            .is_some_and(|paths| paths.iter().any(|path| path == ""))
+                }) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(3), observe)
+            .await
+            .expect("watch state advances before the slow read completes");
+        assert!(
+            !slow.is_finished(),
+            "watch update was published while the action remained pending"
+        );
+        drop(release);
+        let reply = tokio::time::timeout(Duration::from_secs(2), slow)
+            .await
+            .expect("released action finishes")
+            .expect("join read")
+            .expect("real file read");
+        assert_eq!(reply["type"], "read_text");
+        assert_eq!(
+            reply["file"]["total_bytes"],
+            "read after release\n".len() as u64
+        );
+        served.abort();
+        drop(active);
+    }
+
+    #[tokio::test]
+    async fn a_failed_ui_file_worker_answers_safely_and_allows_the_next_action() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        fs::write(workspace.path().join("README.md"), "read\n").expect("file");
+        let state = state(workspace.path());
+        let session = UiSession::<()>::new("inspector", "files_view").expect("session");
+        let (session, runtime) = super::super::attach_runtime(session, &state).expect("runtime");
+        publish_opening_state(&state, &runtime.0).expect("opening state");
+        let served = tokio::spawn(run_with_runner(state, runtime.0, |state, call| {
+            tokio::task::spawn_blocking(move || {
+                if matches!(call.action(), FilesUiAction::ReadText { .. }) {
+                    panic!("UiFileWorkerPanicCanary");
+                }
+                super::execute_action(&state, &call)
+            })
+        }));
+        let active = session
+            .serve(axum::Router::new(), UiUrlDelivery::new(UiExpiry::Never))
+            .await
+            .expect("serve");
+        let mut page = RuntimeClient::connect(active.access_url(), "failed-reader")
+            .await
+            .expect("page");
+        let _opening: Option<Value> = page.opening_state().await.expect("opening state");
+        let failed_action = json!({"type": "read_text", "path": "README.md"});
+        let failure = tokio::time::timeout(
+            Duration::from_secs(2),
+            page.call::<_, Value>(&failed_action),
+        )
+        .await
+        .expect("failed worker answers")
+        .expect_err("worker failure");
+        assert_eq!(failure.code(), Some("files_io_error"));
+        assert!(!failure.to_string().contains("UiFileWorkerPanicCanary"));
+        let next_action = json!({"type": "browse", "path": ""});
+        let reply: Value = tokio::time::timeout(Duration::from_secs(2), page.call(&next_action))
+            .await
+            .expect("next action answers")
+            .expect("next action");
+        assert_eq!(reply["type"], "browse");
+        served.abort();
+        drop(active);
     }
 }
